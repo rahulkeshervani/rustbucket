@@ -321,7 +321,7 @@ impl Db {
         }
     }
 
-    pub fn zrange(&self, key: &[u8], start: i64, stop: i64, with_scores: bool) -> Vec<(Bytes, f64)> {
+    pub fn zrange(&self, key: &[u8], start: i64, stop: i64, _with_scores: bool) -> Vec<(Bytes, f64)> {
         let shard_idx = self.get_shard(key);
         let shard = self.shards[shard_idx].read().unwrap();
         

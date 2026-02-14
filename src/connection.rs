@@ -35,9 +35,8 @@ impl Connection {
     pub fn new(socket: TcpStream) -> Connection {
         Connection {
             stream: BufWriter::new(socket),
-            // Default to a 4kb read buffer. For the purpose of this implementation,
-            // this is fine. specialized implementations might configure this.
-            buffer: BytesMut::with_capacity(4 * 1024),
+            // Default to a 16kb read buffer.
+            buffer: BytesMut::with_capacity(16 * 1024),
         }
     }
 

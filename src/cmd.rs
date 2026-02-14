@@ -1,10 +1,9 @@
-use crate::{Connection, Db, Frame, Error};
+use crate::{Connection, Db, Frame};
 use crate::db::DataType;
 use serde_json;
 use bytes::Bytes;
 use std::str;
-use tracing::{debug, instrument, warn};
-use std::collections::{HashMap, HashSet};
+use tracing::instrument;
 
 /// Enumeration of supported Redis commands.
 ///
@@ -153,6 +152,7 @@ impl Command {
     }
 
     /// Returns the command name
+    #[allow(dead_code)]
     pub(crate) fn get_name(&self) -> &str {
         match self {
             Command::Get(_) => "get",
@@ -247,13 +247,13 @@ impl Ping {
 }
 
 #[derive(Debug)]
-pub struct Auth { password: String, username: Option<String> }
+pub struct Auth { _password: String, _username: Option<String> }
 impl Auth {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Auth> {
         let first = parse.next_string()?;
         match parse.next_string() {
-            Ok(second) => Ok(Auth { username: Some(first), password: second }),
-            Err(_) => Ok(Auth { username: None, password: first }),
+            Ok(second) => Ok(Auth { _username: Some(first), _password: second }),
+            Err(_) => Ok(Auth { _username: None, _password: first }),
         }
     }
     pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> { dst.write_frame(&Frame::Simple("OK".into())).await?; Ok(()) }
@@ -784,7 +784,7 @@ impl JsonSet {
         Ok(JsonSet { key, path, value })
     }
      pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-         let mut json_val = match db.get_value_clone(&self.key) {
+         let _json_val = match db.get_value_clone(&self.key) {
              Some(DataType::Json(v)) => v,
              None => serde_json::Value::Null,
              _ => {

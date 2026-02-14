@@ -1,7 +1,7 @@
 use crate::{Command, Connection, Db};
-use std::sync::Arc;
+
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info, instrument};
+use tracing::{error, instrument};
 
 /// Run the mini-redis server.
 ///
