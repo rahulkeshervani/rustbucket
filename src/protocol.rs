@@ -26,6 +26,7 @@ pub enum Error {
 
 impl Frame {
     /// Returns an empty array
+    #[allow(dead_code)]
     pub(crate) fn array() -> Frame {
         Frame::Array(vec![])
     }
@@ -35,6 +36,7 @@ impl Frame {
     /// # Panics
     ///
     /// Panics if `self` is not an array frame.
+    #[allow(dead_code)]
     pub(crate) fn push_bulk(&mut self, bytes: Bytes) {
         match self {
             Frame::Array(vec) => {
@@ -49,6 +51,7 @@ impl Frame {
     /// # Panics
     ///
     /// Panics if `self` is not an array frame.
+    #[allow(dead_code)]
     pub(crate) fn push_int(&mut self, value: i64) {
         match self {
             Frame::Array(vec) => {

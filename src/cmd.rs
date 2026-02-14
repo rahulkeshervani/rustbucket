@@ -196,12 +196,12 @@ impl Command {
     }
 }
 
-// RESTORED STRUCTS
+// RESTORED STRUCTS - Zero-Copy Key versions
 
 #[derive(Debug)]
-pub struct Get { key: String }
+pub struct Get { key: Bytes }
 impl Get {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Get> { Ok(Get { key: parse.next_string()? }) }
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Get> { Ok(Get { key: parse.next_bytes()? }) }
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
         let response = if let Some(value) = db.get(&self.key) { Frame::Bulk(value) } else { Frame::Null };
         dst.write_frame(&response).await?;
@@ -210,10 +210,10 @@ impl Get {
 }
 
 #[derive(Debug)]
-pub struct Set { key: String, value: Bytes }
+pub struct Set { key: Bytes, value: Bytes }
 impl Set {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Set> { 
-        Ok(Set { key: parse.next_string()?, value: parse.next_bytes()? }) 
+        Ok(Set { key: parse.next_bytes()?, value: parse.next_bytes()? }) 
     }
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
         db.set(self.key, self.value);
@@ -223,9 +223,9 @@ impl Set {
 }
 
 #[derive(Debug)]
-pub struct Del { key: String }
+pub struct Del { key: Bytes }
 impl Del {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Del> { Ok(Del { key: parse.next_string()? }) }
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Del> { Ok(Del { key: parse.next_bytes()? }) }
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
         let n = if db.delete(&self.key) { 1 } else { 0 };
         dst.write_frame(&Frame::Integer(n)).await?;
@@ -260,10 +260,10 @@ impl Auth {
 }
 
 #[derive(Debug)]
-pub struct Info { section: Option<String> }
+pub struct Info { _section: Option<String> }
 impl Info {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Info> {
-        match parse.next_string() { Ok(s) => Ok(Info { section: Some(s) }), Err(_) => Ok(Info { section: None }) }
+        match parse.next_string() { Ok(s) => Ok(Info { _section: Some(s) }), Err(_) => Ok(Info { _section: None }) }
     }
     pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
         let msg = "role:master\r\nconnected_clients:1\r\nredis_version:0.1.0\r\n";
@@ -275,12 +275,12 @@ impl Info {
 
 #[derive(Debug)]
 pub struct Exists {
-    key: String,
+    key: Bytes,
 }
 
 impl Exists {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Exists> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         Ok(Exists { key })
     }
 
@@ -298,15 +298,15 @@ impl Exists {
 
 #[derive(Debug)]
 pub struct HSet {
-    key: String,
-    field: String,
+    key: Bytes,
+    field: Bytes,
     value: Bytes,
 }
 
 impl HSet {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HSet> {
-        let key = parse.next_string()?;
-        let field = parse.next_string()?;
+        let key = parse.next_bytes()?;
+        let field = parse.next_bytes()?;
         let value = parse.next_bytes()?;
         Ok(HSet { key, field, value })
     }
@@ -320,14 +320,14 @@ impl HSet {
 
 #[derive(Debug)]
 pub struct HGet {
-    key: String,
-    field: String,
+    key: Bytes,
+    field: Bytes,
 }
 
 impl HGet {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HGet> {
-        let key = parse.next_string()?;
-        let field = parse.next_string()?;
+        let key = parse.next_bytes()?;
+        let field = parse.next_bytes()?;
         Ok(HGet { key, field })
     }
 
@@ -343,14 +343,14 @@ impl HGet {
 
 #[derive(Debug)]
 pub struct HDel {
-    key: String,
-    field: String,
+    key: Bytes,
+    field: Bytes,
 }
 
 impl HDel {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HDel> {
-        let key = parse.next_string()?;
-        let field = parse.next_string()?;
+        let key = parse.next_bytes()?;
+        let field = parse.next_bytes()?;
         Ok(HDel { key, field })
     }
 
@@ -363,14 +363,14 @@ impl HDel {
 
 #[derive(Debug)]
 pub struct HExists {
-    key: String,
-    field: String,
+    key: Bytes,
+    field: Bytes,
 }
 
 impl HExists {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HExists> {
-        let key = parse.next_string()?;
-        let field = parse.next_string()?;
+        let key = parse.next_bytes()?;
+        let field = parse.next_bytes()?;
         Ok(HExists { key, field })
     }
 
@@ -383,12 +383,12 @@ impl HExists {
 
 #[derive(Debug)]
 pub struct HGetAll {
-    key: String,
+    key: Bytes,
 }
 
 impl HGetAll {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HGetAll> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         Ok(HGetAll { key })
     }
 
@@ -397,7 +397,7 @@ impl HGetAll {
             Some(h) => {
                 let mut frames = Vec::new();
                 for (k, v) in h {
-                    frames.push(Frame::Bulk(Bytes::from(k)));
+                    frames.push(Frame::Bulk(k));
                     frames.push(Frame::Bulk(v));
                 }
                 Frame::Array(frames)
@@ -411,12 +411,12 @@ impl HGetAll {
 
 #[derive(Debug)]
 pub struct HKeys {
-    key: String,
+    key: Bytes,
 }
 
 impl HKeys {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HKeys> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         Ok(HKeys { key })
     }
 
@@ -424,7 +424,7 @@ impl HKeys {
         let keys = db.hkeys(&self.key);
         let mut frames = Vec::new();
         for k in keys {
-            frames.push(Frame::Bulk(Bytes::from(k)));
+            frames.push(Frame::Bulk(k));
         }
         dst.write_frame(&Frame::Array(frames)).await?;
         Ok(())
@@ -433,12 +433,12 @@ impl HKeys {
 
 #[derive(Debug)]
 pub struct HVals {
-    key: String,
+    key: Bytes,
 }
 
 impl HVals {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HVals> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         Ok(HVals { key })
     }
 
@@ -456,13 +456,13 @@ impl HVals {
 
 #[derive(Debug)]
 pub struct HLen {
-    key: String,
-    field: String,
+    key: Bytes,
+    _field: String,
 } 
 impl HLen {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HLen> {
-        let key = parse.next_string()?;
-        Ok(HLen { key, field: String::new() }) 
+        let key = parse.next_bytes()?;
+        Ok(HLen { key, _field: String::new() }) 
     }
     
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
@@ -474,22 +474,22 @@ impl HLen {
 
 #[derive(Debug)]
 pub struct HScan {
-    key: String,
-    cursor: u64,
+    key: Bytes,
+    _cursor: u64,
 }
 
 impl HScan {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HScan> { 
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let cursor_str = parse.next_string()?;
-        Ok(HScan { key, cursor: cursor_str.parse().unwrap_or(0) }) 
+        Ok(HScan { key, _cursor: cursor_str.parse().unwrap_or(0) }) 
     }
     
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
         if let Some(map) = db.hgetall(&self.key) {
               let mut frames = Vec::new();
                 for (k, v) in map {
-                    frames.push(Frame::Bulk(Bytes::from(k)));
+                    frames.push(Frame::Bulk(k));
                     frames.push(Frame::Bulk(v));
                 }
                 let result = vec![
@@ -508,16 +508,17 @@ impl HScan {
     }
 }
 
+
 // Arrays / Lists
 #[derive(Debug)]
 pub struct LPush {
-    key: String,
+    key: Bytes,
     values: Vec<Bytes>,
 }
 
 impl LPush {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<LPush> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let mut values = Vec::new();
         // Support variadic arguments
         while let Ok(val) = parse.next_bytes() {
@@ -538,13 +539,13 @@ impl LPush {
 
 #[derive(Debug)]
 pub struct RPush {
-    key: String,
+    key: Bytes,
     values: Vec<Bytes>,
 }
 
 impl RPush {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<RPush> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let mut values = Vec::new();
         while let Ok(val) = parse.next_bytes() {
             values.push(val);
@@ -564,12 +565,12 @@ impl RPush {
 
 #[derive(Debug)]
 pub struct LPop {
-    key: String,
+    key: Bytes,
 }
 
 impl LPop {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<LPop> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         Ok(LPop { key })
     }
 
@@ -584,12 +585,12 @@ impl LPop {
 
 #[derive(Debug)]
 pub struct RPop {
-    key: String,
+    key: Bytes,
 }
 
 impl RPop {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<RPop> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         Ok(RPop { key })
     }
 
@@ -604,14 +605,14 @@ impl RPop {
 
 #[derive(Debug)]
 pub struct LRange {
-    key: String,
+    key: Bytes,
     start: i64,
     stop: i64,
 }
 
 impl LRange {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<LRange> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let start = parse.next_int()?;
         let stop = parse.next_int()?;
         Ok(LRange { key, start, stop })
@@ -631,13 +632,13 @@ impl LRange {
 
 #[derive(Debug)]
 pub struct SAdd {
-    key: String,
+    key: Bytes,
     members: Vec<Bytes>,
 }
 
 impl SAdd {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<SAdd> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let mut members = Vec::new();
         while let Ok(val) = parse.next_bytes() {
             members.push(val);
@@ -657,12 +658,12 @@ impl SAdd {
 
 #[derive(Debug)]
 pub struct SMembers {
-    key: String,
+    key: Bytes,
 }
 
 impl SMembers {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<SMembers> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         Ok(SMembers { key })
     }
 
@@ -679,13 +680,13 @@ impl SMembers {
 
 #[derive(Debug)]
 pub struct SRem {
-    key: String,
+    key: Bytes,
     members: Vec<Bytes>,
 }
 
 impl SRem {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<SRem> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let mut members = Vec::new();
         while let Ok(val) = parse.next_bytes() {
             members.push(val);
@@ -705,17 +706,17 @@ impl SRem {
 
 #[derive(Debug)]
 pub struct ZAdd {
-    key: String,
-    elements: Vec<(f64, String)>,
+    key: Bytes,
+    elements: Vec<(f64, Bytes)>,
 }
 
 impl ZAdd {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<ZAdd> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let mut elements = Vec::new();
         while let Ok(score_str) = parse.next_string() {
             let score = score_str.parse::<f64>().map_err(|_| "ERR value is not a valid float")?;
-            let member = parse.next_string()?;
+            let member = parse.next_bytes()?;
             elements.push((score, member));
         }
         Ok(ZAdd { key, elements })
@@ -733,7 +734,7 @@ impl ZAdd {
 
 #[derive(Debug)]
 pub struct ZRange {
-    key: String,
+    key: Bytes,
     start: i64,
     stop: i64,
     with_scores: bool,
@@ -741,7 +742,7 @@ pub struct ZRange {
 
 impl ZRange {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<ZRange> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let start = parse.next_int()?;
         let stop = parse.next_int()?;
         let mut with_scores = false;
@@ -757,7 +758,7 @@ impl ZRange {
         let values = db.zrange(&self.key, self.start, self.stop, self.with_scores);
         let mut frames = Vec::new();
         for (member, score) in values {
-            frames.push(Frame::Bulk(Bytes::from(member)));
+            frames.push(Frame::Bulk(member));
             if self.with_scores {
                 frames.push(Frame::Bulk(Bytes::from(score.to_string())));
             }
@@ -770,14 +771,14 @@ impl ZRange {
 
 #[derive(Debug)]
 pub struct JsonSet {
-    key: String,
+    key: Bytes,
     path: String,
     value: String,
 }
 
 impl JsonSet {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<JsonSet> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let path = parse.next_string()?;
         let value = parse.next_string()?;
         Ok(JsonSet { key, path, value })
@@ -800,33 +801,102 @@ impl JsonSet {
                    dst.write_frame(&Frame::Error("ERR invalid json".into())).await?;
               }
          } else {
-               dst.write_frame(&Frame::Error("ERR path not supported yet".into())).await?;
+            dst.write_frame(&Frame::Error("ERR only root path $ supported for now".into())).await?;
          }
          Ok(())
-     }
+    }
 }
 
 #[derive(Debug)]
 pub struct JsonGet {
-    key: String,
+    key: Bytes,
     path: String,
 }
 
 impl JsonGet {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<JsonGet> {
-        let key = parse.next_string()?;
+        let key = parse.next_bytes()?;
         let path = parse.next_string()?;
         Ok(JsonGet { key, path })
     }
 
-     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-         let response = match db.get_value_clone(&self.key) {
-             Some(DataType::Json(v)) => Frame::Bulk(Bytes::from(v.to_string())),
-             _ => Frame::Null
-         };
-         dst.write_frame(&response).await?;
-         Ok(())
-     }
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        if let Some(DataType::Json(v)) = db.get_value_clone(&self.key) {
+             if self.path == "$" {
+                 let s = v.to_string();
+                 dst.write_frame(&Frame::Bulk(Bytes::from(s))).await?;
+             } else {
+                 dst.write_frame(&Frame::Null).await?;
+             }
+        } else {
+             dst.write_frame(&Frame::Null).await?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Keys {
+    pattern: String,
+}
+
+impl Keys {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Keys> {
+        let pattern = parse.next_string()?;
+        Ok(Keys { pattern })
+    }
+
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        // Warning: This is O(N) over all keys
+        let keys = db.keys();
+        let mut frames = Vec::new();
+        
+        // Simple pattern matching (only support "*")
+        let match_all = self.pattern == "*";
+        
+        for k in keys {
+            if match_all {
+                frames.push(Frame::Bulk(k));
+            } else {
+                // Convert bytes to string for pattern match (expensive but compatible)
+                // If invalid utf8, skip? or include? Redis matches bytes.
+                // Assuming keys are utf8 for pattern matching for now.
+                if let Ok(s) = String::from_utf8(k.to_vec()) {
+                    if s == self.pattern {
+                         frames.push(Frame::Bulk(k));
+                    }
+                }
+            }
+        }
+        dst.write_frame(&Frame::Array(frames)).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Type {
+    key: Bytes,
+}
+
+impl Type {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Type> {
+        let key = parse.next_bytes()?;
+        Ok(Type { key })
+    }
+
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        let t = match db.get_value_clone(&self.key) {
+            Some(DataType::String(_)) => "string",
+            Some(DataType::List(_)) => "list",
+            Some(DataType::Set(_)) => "set",
+            Some(DataType::Hash(_)) => "hash",
+            Some(DataType::ZSet(_)) => "zset",
+            Some(DataType::Json(_)) => "ReJSON-RL",
+            None => "none",
+        };
+       dst.write_frame(&Frame::Simple(t.into())).await?;
+       Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -851,63 +921,12 @@ impl FlushDb {
 }
 
 #[derive(Debug)]
-pub struct Type { key: String }
-impl Type {
-     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Type> { Ok(Type { key: parse.next_string()? }) }
-     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-         let type_str = match db.get_value_clone(&self.key) {
-             Some(DataType::String(_)) => "string",
-             Some(DataType::List(_)) => "list",
-             Some(DataType::Set(_)) => "set",
-             Some(DataType::ZSet(_)) => "zset",
-             Some(DataType::Hash(_)) => "hash",
-             Some(DataType::Json(_)) => "ReJSON-RL",
-             None => "none",
-         };
-         dst.write_frame(&Frame::Simple(type_str.into())).await?;
-         Ok(())
-     }
-}
-
-#[derive(Debug)]
-pub struct Keys { pattern: String }
-impl Keys {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Keys> { Ok(Keys { pattern: parse.next_string()? }) }
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let keys = db.keys();
-        let pattern = self.pattern.replace("*", "");
-        let matched: Vec<Frame> = keys.into_iter()
-            .filter(|k| k.contains(&pattern))
-            .map(|k| Frame::Bulk(Bytes::from(k)))
-            .collect();
-        dst.write_frame(&Frame::Array(matched)).await?;
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct Scan { cursor: u64 }
-impl Scan {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Scan> { 
-        let _cursor = parse.next_string()?; 
-        Ok(Scan { cursor: 0 }) 
-    }
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let keys = db.keys(); 
-        let frames: Vec<Frame> = keys.into_iter().take(100).map(|k| Frame::Bulk(Bytes::from(k))).collect();
-        let resp = vec![Frame::Bulk(Bytes::from("0")), Frame::Array(frames)];
-        dst.write_frame(&Frame::Array(resp)).await?;
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct Ttl { key: String }
+pub struct Ttl { key: Bytes }
 impl Ttl {
-     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Ttl> { Ok(Ttl { key: parse.next_string()? }) }
+     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Ttl> { Ok(Ttl { key: parse.next_bytes()? }) }
      pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
          if db.exists(&self.key) {
-             dst.write_frame(&Frame::Integer(-1)).await?;
+             dst.write_frame(&Frame::Integer(-1)).await?; // No expiry support yet
          } else {
              dst.write_frame(&Frame::Integer(-2)).await?;
          }
@@ -916,12 +935,12 @@ impl Ttl {
 }
 
 #[derive(Debug)]
-pub struct Pttl { key: String }
+pub struct Pttl { key: Bytes }
 impl Pttl {
-     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Pttl> { Ok(Pttl { key: parse.next_string()? }) }
+     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Pttl> { Ok(Pttl { key: parse.next_bytes()? }) }
      pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
          if db.exists(&self.key) {
-             dst.write_frame(&Frame::Integer(-1)).await?;
+             dst.write_frame(&Frame::Integer(-1)).await?; 
          } else {
              dst.write_frame(&Frame::Integer(-2)).await?;
          }
@@ -930,30 +949,72 @@ impl Pttl {
 }
 
 #[derive(Debug)]
-pub struct Select { db: i64 }
-impl Select {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Select> { Ok(Select { db: parse.next_int()? }) }
-    pub async fn apply(self, _dst: &mut Connection) -> crate::Result<()> { Ok(()) }
-}
-
-#[derive(Debug)]
-pub struct Unknown { command_name: String }
-impl Unknown {
-    pub(crate) fn new(key: impl ToString) -> Unknown { Unknown { command_name: key.to_string() } }
-    pub(crate) fn get_name(&self) -> &str { &self.command_name }
-    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
-        dst.write_frame(&Frame::Error(format!("unknown command '{}'", self.command_name))).await?;
-        Ok(())
+pub struct Scan { _cursor: u64 }
+impl Scan {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Scan> {
+        let _cursor = parse.next_string()?;
+        Ok(Scan { _cursor: 0 })
+    }
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+         // Full Scan O(N) for now
+         let keys = db.keys();
+         let mut frames = Vec::new();
+         for k in keys {
+             frames.push(Frame::Bulk(k));
+         }
+         let result = vec![
+            Frame::Bulk(Bytes::from("0")),
+            Frame::Array(frames),
+         ];
+         dst.write_frame(&Frame::Array(result)).await?;
+         Ok(())
     }
 }
 
 
-struct Parse {
+#[derive(Debug)]
+pub struct Select { _db: i64 }
+impl Select {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Select> {
+        Ok(Select { _db: parse.next_int()? })
+    }
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
+        dst.write_frame(&Frame::Simple("OK".into())).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Unknown {
+    command_name: String,
+}
+
+impl Unknown {
+    pub(crate) fn new(key: impl ToString) -> Unknown {
+        Unknown {
+            command_name: key.to_string(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_name(&self) -> &str {
+        &self.command_name
+    }
+
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
+        let response = Frame::Error(format!("ERR unknown command '{}'", self.command_name));
+        dst.write_frame(&response).await?;
+        Ok(())
+    }
+}
+
+/// Utility for extracting data from a `Frame` array.
+pub(crate) struct Parse {
     parts: std::vec::IntoIter<Frame>,
 }
 
 impl Parse {
-    fn new(frame: Frame) -> Result<Parse, Error> {
+    pub(crate) fn new(frame: Frame) -> crate::Result<Parse> {
         let array = match frame {
             Frame::Array(array) => array,
             frame => return Err(format!("protocol error; expected array, got {:?}", frame).into()),
@@ -964,11 +1025,11 @@ impl Parse {
         })
     }
 
-    fn next(&mut self) -> Result<Frame, Error> {
-        self.parts.next().ok_or_else(|| "protocol error; expected frame".into())
+    pub(crate) fn next(&mut self) -> crate::Result<Frame> {
+        self.parts.next().ok_or_else(|| "protocol error; end of stream".into())
     }
 
-    fn next_string(&mut self) -> Result<String, Error> {
+    pub(crate) fn next_string(&mut self) -> crate::Result<String> {
         match self.next()? {
             Frame::Simple(s) => Ok(s),
             Frame::Bulk(data) => std::str::from_utf8(&data[..])
@@ -977,8 +1038,8 @@ impl Parse {
             frame => Err(format!("protocol error; expected simple frame or bulk frame, got {:?}", frame).into()),
         }
     }
-
-    fn next_bytes(&mut self) -> Result<Bytes, Error> {
+    
+    pub(crate) fn next_bytes(&mut self) -> crate::Result<Bytes> {
         match self.next()? {
             Frame::Simple(s) => Ok(Bytes::from(s.into_bytes())),
             Frame::Bulk(data) => Ok(data),
@@ -986,20 +1047,20 @@ impl Parse {
         }
     }
 
-    fn next_int(&mut self) -> Result<i64, Error> {
+    pub(crate) fn next_int(&mut self) -> crate::Result<i64> {
         use atoi::atoi;
 
         const MSG: &str = "protocol error; invalid number";
 
         match self.next()? {
             Frame::Integer(v) => Ok(v),
-            Frame::Simple(data) => atoi(data.as_bytes()).ok_or_else(|| MSG.into()),
-            Frame::Bulk(data) => atoi(&data).ok_or_else(|| MSG.into()),
+            Frame::Simple(data) => atoi::<i64>(data.as_bytes()).ok_or_else(|| MSG.into()),
+            Frame::Bulk(data) => atoi::<i64>(&data).ok_or_else(|| MSG.into()),
             frame => Err(format!("protocol error; expected int frame but got {:?}", frame).into()),
         }
     }
 
-    fn finish(&mut self) -> Result<(), Error> {
+    pub(crate) fn finish(&mut self) -> crate::Result<()> {
         if self.parts.next().is_none() {
             Ok(())
         } else {

@@ -6,21 +6,22 @@ use std::hash::{Hash, Hasher, BuildHasher};
 use ahash::{AHashMap, RandomState};
 
 /// Supported Redis data types.
+/// Keys and Fields are now Bytes (Zero-Copy).
 #[derive(Clone, Debug)]
 pub enum DataType {
     String(Bytes),
     List(VecDeque<Bytes>),
     Set(HashSet<Bytes>),
-    Hash(AHashMap<String, Bytes>),
-    ZSet(AHashMap<String, f64>), // Simplified ZSet for now
+    Hash(AHashMap<Bytes, Bytes>),
+    ZSet(AHashMap<Bytes, f64>), // Simplified ZSet
     Json(serde_json::Value),
 }
 
 /// A thread-safe, sharded Redis-like database.
 #[derive(Clone)]
 pub struct Db {
-    // Shards for data storage using fast AHashMap
-    shards: Vec<Arc<RwLock<AHashMap<String, DataType>>>>,
+    // Shards for data storage using fast AHashMap and Bytes keys
+    shards: Vec<Arc<RwLock<AHashMap<Bytes, DataType>>>>,
     // Hasher builder for consistent sharding
     hasher: RandomState,
 }
@@ -40,14 +41,14 @@ impl Db {
         }
     }
 
-    fn get_shard(&self, key: &str) -> usize {
+    fn get_shard(&self, key: &[u8]) -> usize {
         let mut hasher = self.hasher.build_hasher();
         key.hash(&mut hasher);
         (hasher.finish() as usize) % SHARD_COUNT
     }
 
     /// Get the value associated with a key.
-    pub fn get(&self, key: &str) -> Option<Bytes> {
+    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
         let shard_idx = self.get_shard(key);
         let shard = self.shards[shard_idx].read().unwrap();
         match shard.get(key) {
@@ -57,28 +58,27 @@ impl Db {
     }
 
     /// Set the value associated with a key.
-    pub fn set(&self, key: String, value: Bytes) {
+    pub fn set(&self, key: Bytes, value: Bytes) {
         let shard_idx = self.get_shard(&key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         shard.insert(key, DataType::String(value));
     }
 
     /// Delete the value associated with `key`.
-    pub fn delete(&self, key: &str) -> bool {
+    pub fn delete(&self, key: &[u8]) -> bool {
         let shard_idx = self.get_shard(key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         shard.remove(key).is_some()
     }
 
-    pub fn exists(&self, key: &str) -> bool {
+    pub fn exists(&self, key: &[u8]) -> bool {
         let shard_idx = self.get_shard(key);
         let shard = self.shards[shard_idx].read().unwrap();
         shard.contains_key(key)
     }
 
-    /// Return all keys in the database. (Aggregates from all shards)
-    /// Note: This is not atomic across shards.
-    pub fn keys(&self) -> Vec<String> {
+    /// Return all keys in the database.
+    pub fn keys(&self) -> Vec<Bytes> {
         let mut keys = Vec::new();
         for shard in &self.shards {
              let state = shard.read().unwrap();
@@ -108,7 +108,7 @@ impl Db {
     // --- Type Specific Operations (Atomic) ---
 
     // Hash Operations
-    pub fn hset(&self, key: String, field: String, value: Bytes) -> usize {
+    pub fn hset(&self, key: Bytes, field: Bytes, value: Bytes) -> usize {
         let shard_idx = self.get_shard(&key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         
@@ -116,13 +116,13 @@ impl Db {
         
         if let DataType::Hash(map) = entry {
             map.insert(field, value);
-            1 // Simplified: always returns 1 (Redis returns 1 if new, 0 if updated)
+            1 
         } else {
-            0 // Should ideally be error, but keeping signature simple for now
+            0 
         }
     }
 
-    pub fn hget(&self, key: &str, field: &str) -> Option<Bytes> {
+    pub fn hget(&self, key: &[u8], field: &[u8]) -> Option<Bytes> {
         let shard_idx = self.get_shard(key);
         let shard = self.shards[shard_idx].read().unwrap();
         
@@ -132,7 +132,7 @@ impl Db {
         }
     }
 
-    pub fn hdel(&self, key: &str, field: &str) -> usize {
+    pub fn hdel(&self, key: &[u8], field: &[u8]) -> usize {
         let shard_idx = self.get_shard(key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         
@@ -142,7 +142,7 @@ impl Db {
         }
     }
 
-    pub fn hexists(&self, key: &str, field: &str) -> usize {
+    pub fn hexists(&self, key: &[u8], field: &[u8]) -> usize {
         let shard_idx = self.get_shard(key);
         let shard = self.shards[shard_idx].read().unwrap();
          match shard.get(key) {
@@ -151,7 +151,7 @@ impl Db {
         }
     }
 
-    pub fn hgetall(&self, key: &str) -> Option<AHashMap<String, Bytes>> {
+    pub fn hgetall(&self, key: &[u8]) -> Option<AHashMap<Bytes, Bytes>> {
         let shard_idx = self.get_shard(key);
         let shard = self.shards[shard_idx].read().unwrap();
         match shard.get(key) {
@@ -160,7 +160,7 @@ impl Db {
         }
     }
     
-    pub fn hkeys(&self, key: &str) -> Vec<String> {
+    pub fn hkeys(&self, key: &[u8]) -> Vec<Bytes> {
          let shard_idx = self.get_shard(key);
          let shard = self.shards[shard_idx].read().unwrap();
          match shard.get(key) {
@@ -169,7 +169,7 @@ impl Db {
          }
     }
 
-    pub fn hvals(&self, key: &str) -> Vec<Bytes> {
+    pub fn hvals(&self, key: &[u8]) -> Vec<Bytes> {
          let shard_idx = self.get_shard(key);
          let shard = self.shards[shard_idx].read().unwrap();
          match shard.get(key) {
@@ -178,7 +178,7 @@ impl Db {
          }
     }
     
-    pub fn hlen(&self, key: &str) -> usize {
+    pub fn hlen(&self, key: &[u8]) -> usize {
          let shard_idx = self.get_shard(key);
          let shard = self.shards[shard_idx].read().unwrap();
          match shard.get(key) {
@@ -188,7 +188,7 @@ impl Db {
     }
 
     // List Operations
-    pub fn lpush(&self, key: String, value: Bytes) -> usize {
+    pub fn lpush(&self, key: Bytes, value: Bytes) -> usize {
         let shard_idx = self.get_shard(&key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         
@@ -202,8 +202,7 @@ impl Db {
         }
     }
     
-    // List Operations (Continued)
-    pub fn rpush(&self, key: String, value: Bytes) -> usize {
+    pub fn rpush(&self, key: Bytes, value: Bytes) -> usize {
         let shard_idx = self.get_shard(&key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         
@@ -217,7 +216,7 @@ impl Db {
         }
     }
 
-    pub fn lpop(&self, key: &str) -> Option<Bytes> {
+    pub fn lpop(&self, key: &[u8]) -> Option<Bytes> {
         let shard_idx = self.get_shard(key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         
@@ -231,7 +230,7 @@ impl Db {
         }
     }
 
-    pub fn rpop(&self, key: &str) -> Option<Bytes> {
+    pub fn rpop(&self, key: &[u8]) -> Option<Bytes> {
         let shard_idx = self.get_shard(key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         
@@ -245,9 +244,8 @@ impl Db {
         }
     }
 
-    pub fn lrange(&self, key: &str, start: i64, stop: i64) -> Vec<Bytes> {
+    pub fn lrange(&self, key: &[u8], start: i64, stop: i64) -> Vec<Bytes> {
         let shard_idx = self.get_shard(key);
-        // Read lock is sufficient
         let shard = self.shards[shard_idx].read().unwrap();
         
         match shard.get(key) {
@@ -255,7 +253,6 @@ impl Db {
                 let len = list.len() as i64;
                 if len == 0 { return Vec::new(); }
                 
-                // Handle negative indices
                 let start = if start < 0 { len + start } else { start };
                 let stop = if stop < 0 { len + stop } else { stop };
                 
@@ -266,7 +263,6 @@ impl Db {
                     return Vec::new();
                 }
                 
-                // VecDeque range access
                 list.iter().skip(start).take(stop - start + 1).cloned().collect()
             },
             _ => Vec::new(),
@@ -274,7 +270,7 @@ impl Db {
     }
 
     // Set Operations
-    pub fn sadd(&self, key: String, member: Bytes) -> usize {
+    pub fn sadd(&self, key: Bytes, member: Bytes) -> usize {
         let shard_idx = self.get_shard(&key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         
@@ -287,7 +283,7 @@ impl Db {
         }
     }
 
-    pub fn smembers(&self, key: &str) -> Vec<Bytes> {
+    pub fn smembers(&self, key: &[u8]) -> Vec<Bytes> {
         let shard_idx = self.get_shard(key);
         let shard = self.shards[shard_idx].read().unwrap();
         
@@ -297,7 +293,7 @@ impl Db {
         }
     }
 
-    pub fn srem(&self, key: &str, member: &Bytes) -> usize {
+    pub fn srem(&self, key: &[u8], member: &Bytes) -> usize {
         let shard_idx = self.get_shard(key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         
@@ -311,30 +307,27 @@ impl Db {
         }
     }
 
-    // ZSet Operations (Simplified for now - strictly score mapping)
-    pub fn zadd(&self, key: String, score: f64, member: String) -> usize {
+    // ZSet Operations
+    pub fn zadd(&self, key: Bytes, score: f64, member: Bytes) -> usize {
         let shard_idx = self.get_shard(&key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         
         let entry = shard.entry(key).or_insert_with(|| DataType::ZSet(AHashMap::new()));
         
         if let DataType::ZSet(scores) = entry {
-            // Redis ZADD returns number of *new* elements added. 
-            // If strictly updating score, returns 0.
             if scores.insert(member, score).is_none() { 1 } else { 0 }
         } else {
             0
         }
     }
 
-    pub fn zrange(&self, key: &str, start: i64, stop: i64, with_scores: bool) -> Vec<(String, f64)> {
+    pub fn zrange(&self, key: &[u8], start: i64, stop: i64, with_scores: bool) -> Vec<(Bytes, f64)> {
         let shard_idx = self.get_shard(key);
         let shard = self.shards[shard_idx].read().unwrap();
         
         match shard.get(key) {
             Some(DataType::ZSet(scores)) => {
-                 // Sort everything - O(N log N) - Valid for MVP
-                 let mut sorted: Vec<(&String, &f64)> = scores.iter().collect();
+                 let mut sorted: Vec<(&Bytes, &f64)> = scores.iter().collect();
                  sorted.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal));
                  
                  let len = sorted.len() as i64;
@@ -356,13 +349,13 @@ impl Db {
         }
     }
 
-    pub fn get_value_clone(&self, key: &str) -> Option<DataType> {
+    pub fn get_value_clone(&self, key: &[u8]) -> Option<DataType> {
         let shard_idx = self.get_shard(key);
         let shard = self.shards[shard_idx].read().unwrap();
         shard.get(key).cloned()
     }
     
-    pub fn set_value(&self, key: String, value: DataType) {
+    pub fn set_value(&self, key: Bytes, value: DataType) {
         let shard_idx = self.get_shard(&key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         shard.insert(key, value);
