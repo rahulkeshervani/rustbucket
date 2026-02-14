@@ -17,7 +17,7 @@
 
 ## 📊 Performance Benchmarks
 
-Benchmarks were conducted on a MacBook Pro M3 Max using `redis-benchmark` with 16-command pipelining against both RustBucket and Redis 7.2 (reference).
+Benchmarks were conducted on a MacBook Pro M4 Pro using `redis-benchmark` with 16-command pipelining against both RustBucket and Redis 7.2 (reference).
 
 | Metric | RustBucket (v2.0) | Redis (Ref) | vs Redis |
 | :--- | :--- | :--- | :--- |
