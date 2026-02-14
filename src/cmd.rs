@@ -8,7 +8,7 @@ use tracing::instrument;
 /// Enumeration of supported Redis commands.
 ///
 /// Methods called on `Command` are delegated to the command implementation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Command {
     Get(Get),
     Set(Set),
@@ -46,6 +46,10 @@ pub enum Command {
     Ttl(Ttl),
     Pttl(Pttl),
     Select(Select),
+    Multi(Multi),
+    Exec(Exec),
+    Discard(Discard),
+    Watch(Watch),
     Unknown(Unknown),
 }
 
@@ -95,6 +99,10 @@ impl Command {
             "ttl" => Command::Ttl(Ttl::parse_frames(&mut parse)?),
             "pttl" => Command::Pttl(Pttl::parse_frames(&mut parse)?),
             "select" => Command::Select(Select::parse_frames(&mut parse)?),
+            "multi" => Command::Multi(Multi::parse_frames(&mut parse)?),
+            "exec" => Command::Exec(Exec::parse_frames(&mut parse)?),
+            "discard" => Command::Discard(Discard::parse_frames(&mut parse)?),
+            "watch" => Command::Watch(Watch::parse_frames(&mut parse)?),
             _ => {
                 return Ok(Command::Unknown(Unknown::new(command_name)));
             }
@@ -147,6 +155,10 @@ impl Command {
             Ttl(cmd) => cmd.apply(db, dst).await, 
             Pttl(cmd) => cmd.apply(db, dst).await,
             Select(cmd) => cmd.apply(dst).await,
+            Multi(cmd) => cmd.apply(dst).await,
+            Exec(cmd) => cmd.apply(dst).await,
+            Discard(cmd) => cmd.apply(dst).await,
+            Watch(cmd) => cmd.apply(dst).await,
             Unknown(cmd) => cmd.apply(dst).await,
         }
     }
@@ -191,6 +203,10 @@ impl Command {
             Command::Ttl(_) => "ttl",
             Command::Pttl(_) => "pttl",
             Command::Select(_) => "select",
+            Command::Multi(_) => "multi",
+            Command::Exec(_) => "exec",
+            Command::Discard(_) => "discard",
+            Command::Watch(_) => "watch",
             Command::Unknown(cmd) => cmd.get_name(),
         }
     }
@@ -198,7 +214,7 @@ impl Command {
 
 // RESTORED STRUCTS - Zero-Copy Key versions
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Get { key: Bytes }
 impl Get {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Get> { Ok(Get { key: parse.next_bytes()? }) }
@@ -209,7 +225,7 @@ impl Get {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Set { key: Bytes, value: Bytes }
 impl Set {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Set> { 
@@ -222,7 +238,7 @@ impl Set {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Del { key: Bytes }
 impl Del {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Del> { Ok(Del { key: parse.next_bytes()? }) }
@@ -233,7 +249,7 @@ impl Del {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ping { msg: Option<String> }
 impl Ping {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Ping> {
@@ -246,7 +262,7 @@ impl Ping {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Auth { _password: String, _username: Option<String> }
 impl Auth {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Auth> {
@@ -259,7 +275,7 @@ impl Auth {
     pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> { dst.write_frame(&Frame::Simple("OK".into())).await?; Ok(()) }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Info { _section: Option<String> }
 impl Info {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Info> {
@@ -273,7 +289,7 @@ impl Info {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Exists {
     key: Bytes,
 }
@@ -296,7 +312,7 @@ impl Exists {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HSet {
     key: Bytes,
     field: Bytes,
@@ -318,7 +334,7 @@ impl HSet {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HGet {
     key: Bytes,
     field: Bytes,
@@ -341,7 +357,7 @@ impl HGet {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HDel {
     key: Bytes,
     field: Bytes,
@@ -361,7 +377,7 @@ impl HDel {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HExists {
     key: Bytes,
     field: Bytes,
@@ -381,7 +397,7 @@ impl HExists {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HGetAll {
     key: Bytes,
 }
@@ -409,7 +425,7 @@ impl HGetAll {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HKeys {
     key: Bytes,
 }
@@ -431,7 +447,7 @@ impl HKeys {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HVals {
     key: Bytes,
 }
@@ -454,7 +470,7 @@ impl HVals {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HLen {
     key: Bytes,
     _field: String,
@@ -472,7 +488,7 @@ impl HLen {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HScan {
     key: Bytes,
     _cursor: u64,
@@ -510,7 +526,7 @@ impl HScan {
 
 
 // Arrays / Lists
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LPush {
     key: Bytes,
     values: Vec<Bytes>,
@@ -537,7 +553,7 @@ impl LPush {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RPush {
     key: Bytes,
     values: Vec<Bytes>,
@@ -563,7 +579,7 @@ impl RPush {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LPop {
     key: Bytes,
 }
@@ -583,7 +599,7 @@ impl LPop {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RPop {
     key: Bytes,
 }
@@ -603,7 +619,7 @@ impl RPop {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LRange {
     key: Bytes,
     start: i64,
@@ -630,7 +646,7 @@ impl LRange {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SAdd {
     key: Bytes,
     members: Vec<Bytes>,
@@ -656,7 +672,7 @@ impl SAdd {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SMembers {
     key: Bytes,
 }
@@ -678,7 +694,7 @@ impl SMembers {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SRem {
     key: Bytes,
     members: Vec<Bytes>,
@@ -704,7 +720,7 @@ impl SRem {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ZAdd {
     key: Bytes,
     elements: Vec<(f64, Bytes)>,
@@ -732,7 +748,7 @@ impl ZAdd {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ZRange {
     key: Bytes,
     start: i64,
@@ -769,7 +785,7 @@ impl ZRange {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JsonSet {
     key: Bytes,
     path: String,
@@ -807,7 +823,7 @@ impl JsonSet {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JsonGet {
     key: Bytes,
     path: String,
@@ -835,7 +851,7 @@ impl JsonGet {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Keys {
     pattern: String,
 }
@@ -873,7 +889,7 @@ impl Keys {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Type {
     key: Bytes,
 }
@@ -899,7 +915,7 @@ impl Type {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DbSize {}
 impl DbSize {
     pub(crate) fn parse_frames(_parse: &mut Parse) -> crate::Result<DbSize> { Ok(DbSize {}) }
@@ -909,7 +925,7 @@ impl DbSize {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FlushDb {}
 impl FlushDb {
     pub(crate) fn parse_frames(_parse: &mut Parse) -> crate::Result<FlushDb> { Ok(FlushDb {}) }
@@ -920,7 +936,7 @@ impl FlushDb {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ttl { key: Bytes }
 impl Ttl {
      pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Ttl> { Ok(Ttl { key: parse.next_bytes()? }) }
@@ -934,7 +950,7 @@ impl Ttl {
      }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pttl { key: Bytes }
 impl Pttl {
      pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Pttl> { Ok(Pttl { key: parse.next_bytes()? }) }
@@ -948,7 +964,7 @@ impl Pttl {
      }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Scan { _cursor: u64 }
 impl Scan {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Scan> {
@@ -972,7 +988,7 @@ impl Scan {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Select { _db: i64 }
 impl Select {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Select> {
@@ -984,7 +1000,7 @@ impl Select {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Unknown {
     command_name: String,
 }
@@ -1004,6 +1020,56 @@ impl Unknown {
     pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
         let response = Frame::Error(format!("ERR unknown command '{}'", self.command_name));
         dst.write_frame(&response).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Multi {}
+impl Multi {
+    pub(crate) fn parse_frames(_parse: &mut Parse) -> crate::Result<Multi> { Ok(Multi {}) }
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
+        dst.write_frame(&Frame::Simple("OK".into())).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Exec {}
+impl Exec {
+    pub(crate) fn parse_frames(_parse: &mut Parse) -> crate::Result<Exec> { Ok(Exec {}) }
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
+         // Should be intercepted by server.rs
+         dst.write_frame(&Frame::Error("ERR EXEC without MULTI".into())).await?;
+         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Discard {}
+impl Discard {
+    pub(crate) fn parse_frames(_parse: &mut Parse) -> crate::Result<Discard> { Ok(Discard {}) }
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
+        dst.write_frame(&Frame::Error("ERR DISCARD without MULTI".into())).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Watch { pub match_keys: Vec<Bytes> }
+impl Watch {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Watch> {
+        let mut match_keys = Vec::new();
+        loop {
+            match parse.next_bytes() {
+                Ok(s) => match_keys.push(s),
+                Err(_) => break, // End of args
+            }
+        }
+        Ok(Watch { match_keys })
+    }
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
+        dst.write_frame(&Frame::Simple("OK".into())).await?;
         Ok(())
     }
 }

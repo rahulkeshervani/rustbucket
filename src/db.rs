@@ -4,6 +4,8 @@ use std::sync::{Arc, RwLock};
 use serde_json;
 use std::hash::{Hash, Hasher, BuildHasher};
 use ahash::{AHashMap, RandomState};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::RwLock as AsyncRwLock;
 
 /// Supported Redis data types.
 /// Keys and Fields are now Bytes (Zero-Copy).
@@ -24,6 +26,11 @@ pub struct Db {
     shards: Vec<Arc<RwLock<AHashMap<Bytes, DataType>>>>,
     // Hasher builder for consistent sharding
     hasher: RandomState,
+    // Version counters for each shard (for WATCH)
+    shard_versions: Arc<Vec<AtomicU64>>,
+    // Global lock for transaction atomicity (Executor)
+    // Normal commands take read lock (concurrent), EXEC takes write lock (exclusive)
+    pub batch_lock: Arc<AsyncRwLock<()>>, 
 }
 
 const SHARD_COUNT: usize = 64;
@@ -32,12 +39,16 @@ impl Db {
     /// Create a new, empty `Db` instance with sharding.
     pub fn new() -> Db {
         let mut shards = Vec::with_capacity(SHARD_COUNT);
+        let mut shard_versions = Vec::with_capacity(SHARD_COUNT);
         for _ in 0..SHARD_COUNT {
             shards.push(Arc::new(RwLock::new(AHashMap::new())));
+            shard_versions.push(AtomicU64::new(0));
         }
         Db { 
             shards,
-            hasher: RandomState::new()
+            hasher: RandomState::new(),
+            shard_versions: Arc::new(shard_versions),
+            batch_lock: Arc::new(AsyncRwLock::new(())),
         }
     }
 
@@ -45,6 +56,18 @@ impl Db {
         let mut hasher = self.hasher.build_hasher();
         key.hash(&mut hasher);
         (hasher.finish() as usize) % SHARD_COUNT
+    }
+
+    fn increment_version(&self, shard_idx: usize) {
+        self.shard_versions[shard_idx].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get_shard_version(&self, shard_idx: usize) -> u64 {
+        self.shard_versions[shard_idx].load(Ordering::Relaxed)
+    }
+
+    pub fn get_shard_index(&self, key: &[u8]) -> usize {
+        self.get_shard(key)
     }
 
     /// Get the value associated with a key.
@@ -62,13 +85,16 @@ impl Db {
         let shard_idx = self.get_shard(&key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         shard.insert(key, DataType::String(value));
+        self.increment_version(shard_idx);
     }
 
     /// Delete the value associated with `key`.
     pub fn delete(&self, key: &[u8]) -> bool {
         let shard_idx = self.get_shard(key);
         let mut shard = self.shards[shard_idx].write().unwrap();
-        shard.remove(key).is_some()
+        let res = shard.remove(key).is_some();
+        if res { self.increment_version(shard_idx); }
+        res
     }
 
     pub fn exists(&self, key: &[u8]) -> bool {
@@ -116,6 +142,7 @@ impl Db {
         
         if let DataType::Hash(map) = entry {
             map.insert(field, value);
+            self.increment_version(shard_idx);
             1 
         } else {
             0 
@@ -137,7 +164,12 @@ impl Db {
         let mut shard = self.shards[shard_idx].write().unwrap();
         
         match shard.get_mut(key) {
-            Some(DataType::Hash(map)) => if map.remove(field).is_some() { 1 } else { 0 },
+            Some(DataType::Hash(map)) => {
+                if map.remove(field).is_some() { 
+                    self.increment_version(shard_idx);
+                    1 
+                } else { 0 }
+            },
             _ => 0,
         }
     }
@@ -196,6 +228,7 @@ impl Db {
         
         if let DataType::List(list) = entry {
             list.push_front(value);
+            self.increment_version(shard_idx);
             list.len()
         } else {
             0
@@ -210,6 +243,7 @@ impl Db {
         
         if let DataType::List(list) = entry {
             list.push_back(value);
+            self.increment_version(shard_idx);
             list.len()
         } else {
             0
@@ -223,6 +257,7 @@ impl Db {
         match shard.get_mut(key) {
             Some(DataType::List(list)) => {
                 let ret = list.pop_front();
+                if ret.is_some() { self.increment_version(shard_idx); }
                 if list.is_empty() { shard.remove(key); }
                 ret
             },
@@ -237,6 +272,7 @@ impl Db {
         match shard.get_mut(key) {
              Some(DataType::List(list)) => {
                 let ret = list.pop_back();
+                if ret.is_some() { self.increment_version(shard_idx); }
                 if list.is_empty() { shard.remove(key); }
                 ret
              },
@@ -277,7 +313,10 @@ impl Db {
         let entry = shard.entry(key).or_insert_with(|| DataType::Set(HashSet::new()));
         
         if let DataType::Set(set) = entry {
-            if set.insert(member) { 1 } else { 0 }
+            if set.insert(member) { 
+                self.increment_version(shard_idx);
+                1 
+            } else { 0 }
         } else {
             0
         }
@@ -300,6 +339,7 @@ impl Db {
         match shard.get_mut(key) {
             Some(DataType::Set(set)) => {
                 let ret = if set.remove(member) { 1 } else { 0 };
+                if ret > 0 { self.increment_version(shard_idx); }
                 if set.is_empty() { shard.remove(key); }
                 ret
             },
@@ -315,7 +355,9 @@ impl Db {
         let entry = shard.entry(key).or_insert_with(|| DataType::ZSet(AHashMap::new()));
         
         if let DataType::ZSet(scores) = entry {
-            if scores.insert(member, score).is_none() { 1 } else { 0 }
+            let ret = scores.insert(member, score);
+            self.increment_version(shard_idx);
+            if ret.is_none() { 1 } else { 0 }
         } else {
             0
         }
@@ -359,5 +401,6 @@ impl Db {
         let shard_idx = self.get_shard(&key);
         let mut shard = self.shards[shard_idx].write().unwrap();
         shard.insert(key, value);
+        self.increment_version(shard_idx);
     }
 }

@@ -201,6 +201,12 @@ impl Connection {
         Ok(())
     }
 
+    pub async fn start_array(&mut self, len: usize) -> std::io::Result<()> {
+        self.stream.write_u8(b'*').await?;
+        self.write_decimal(len as i64).await?;
+        Ok(())
+    }
+
     /// Write a decimal integer to the stream
     async fn write_decimal(&mut self, val: i64) -> std::io::Result<()> {
         use std::io::Write;

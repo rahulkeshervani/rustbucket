@@ -11,6 +11,7 @@
 - **Zero-Copy Optimization**: Core engine operates on `bytes::Bytes` to eliminate heap allocations and UTF-8 validation overhead for keys and values.
 - **Smart Pipelining**: Intelligent I/O buffering strategy that batches writes, dramatically increasing throughput for pipelined workloads.
 - **Memory Safe**: Built entirely in safe Rust, eliminating entire classes of bugs like buffer overflows and use-after-free vulnerabilities common in C/C++.
+- **Transactions**: Supports atomic `MULTI`/`EXEC` blocks with optimistic locking (`WATCH`) for safe concurrent operations.
 - **Async I/O**: Powered by `tokio` for efficient, non-blocking network operations.
 
 ---
@@ -68,6 +69,10 @@ RustBucket supports a wide range of Redis commands, including advanced data type
 - `SELECT`
 - `INFO` (Server stats)
 
+### 🔄 Transactions
+- `MULTI`, `EXEC`, `DISCARD`
+- `WATCH` (Optimistic Locking)
+
 ---
 
 ## 🔮 Coming Soon (Roadmap)
@@ -75,7 +80,6 @@ The following Redis features are currently **not implemented** but are planned f
 
 - **Persistence**: AOF (Append Only File) and RDB snapshotting.
 - **Pub/Sub**: `PUBLISH`, `SUBSCRIBE`, `PSUBSCRIBE`.
-- **Transactions**: `MULTI`, `EXEC`, `DISCARD`, `WATCH`.
 - **Scripting**: Lua scripting support (`EVAL`).
 - **Cluster Support**: Native clustering for horizontal scaling.
 - **Eviction Policies**: LRU/LFU memory eviction (currently unbounded).
