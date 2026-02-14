@@ -124,7 +124,13 @@ impl Frame {
 
                 Ok(())
             }
-            actual => Err(format!("protocol error; invalid frame type byte `{}`", actual).into()),
+            _ => {
+                // Inline command support
+                // Reset position to include the first byte we just read
+                src.set_position(src.position() - 1);
+                get_line(src)?;
+                Ok(())
+            }
         }
     }
 
@@ -184,7 +190,20 @@ impl Frame {
 
                 Ok(Frame::Array(out))
             }
-            _ => unimplemented!(),
+            _ => {
+                // Inline command support
+                src.set_position(src.position() - 1);
+                let line = get_line(src)?;
+                let line_str = String::from_utf8(line.to_vec())?;
+                
+                // Split by space and create Array of Bulk strings
+                let parts: Vec<Frame> = line_str
+                    .split_whitespace()
+                    .map(|s| Frame::Bulk(Bytes::from(s.to_string())))
+                    .collect();
+                
+                Ok(Frame::Array(parts))
+            }
         }
     }
 

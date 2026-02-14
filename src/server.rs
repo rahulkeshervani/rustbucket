@@ -47,7 +47,7 @@ async fn process(socket: TcpStream, db: Db) -> crate::Result<()> {
     while let Some(frame) = connection.read_frame().await? {
         let response = match Command::from_frame(frame) {
             Ok(cmd) => {
-                info!(?cmd, "received command");
+                // info!(?cmd, "received command"); // Performance bottleneck
                 // Perform the work
                 cmd.apply(&db, &mut connection).await
             }

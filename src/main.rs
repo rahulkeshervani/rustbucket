@@ -1,3 +1,8 @@
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use tokio::net::TcpListener;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;

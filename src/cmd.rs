@@ -52,18 +52,6 @@ pub enum Command {
 
 impl Command {
     /// Parse a `Command` from a received frame.
-    ///
-    /// The `Frame` must represent a Redis command supported by `mini-redis` and
-    /// be an array frame.
-    ///
-    /// # Returns
-    ///
-    /// On success, the command value is returned.
-    ///
-    /// # Errors
-    ///
-    /// If the frame is not an array frame, or if the command is not supported,
-    /// an error is returned.
     pub fn from_frame(frame: Frame) -> crate::Result<Command> {
         let mut parse = Parse::new(frame)?;
 
@@ -109,26 +97,16 @@ impl Command {
             "pttl" => Command::Pttl(Pttl::parse_frames(&mut parse)?),
             "select" => Command::Select(Select::parse_frames(&mut parse)?),
             _ => {
-                // The command is not recognized, return an Unknown command.
-                //
-                // We return an `Unknown` command rather than an error to allow
-                // the server to continue function and simply return an error
-                // to the client.
                 return Ok(Command::Unknown(Unknown::new(command_name)));
             }
         };
 
-        // Check if there is any remaining data in the frame. If so, return an
-        // error.
         parse.finish()?;
 
         Ok(command)
     }
 
     /// Apply the command to the specified `Db` instance.
-    ///
-    /// The response is written to `dst`. This is called by the server in order
-    /// to execute a received command.
     #[instrument(skip(self, db, dst))]
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
         use Command::*;
@@ -167,8 +145,8 @@ impl Command {
             JsonGet(cmd) => cmd.apply(db, dst).await,
             ZAdd(cmd) => cmd.apply(db, dst).await,
             ZRange(cmd) => cmd.apply(db, dst).await,
-            Ttl(cmd) => cmd.apply(db, dst).await, // Ttl needs db to check key
-            Pttl(cmd) => cmd.apply(db, dst).await, // Pttl needs db to check key
+            Ttl(cmd) => cmd.apply(db, dst).await, 
+            Pttl(cmd) => cmd.apply(db, dst).await,
             Select(cmd) => cmd.apply(dst).await,
             Unknown(cmd) => cmd.apply(dst).await,
         }
@@ -218,6 +196,83 @@ impl Command {
     }
 }
 
+// RESTORED STRUCTS
+
+#[derive(Debug)]
+pub struct Get { key: String }
+impl Get {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Get> { Ok(Get { key: parse.next_string()? }) }
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        let response = if let Some(value) = db.get(&self.key) { Frame::Bulk(value) } else { Frame::Null };
+        dst.write_frame(&response).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Set { key: String, value: Bytes }
+impl Set {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Set> { 
+        Ok(Set { key: parse.next_string()?, value: parse.next_bytes()? }) 
+    }
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        db.set(self.key, self.value);
+        dst.write_frame(&Frame::Simple("OK".into())).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Del { key: String }
+impl Del {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Del> { Ok(Del { key: parse.next_string()? }) }
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        let n = if db.delete(&self.key) { 1 } else { 0 };
+        dst.write_frame(&Frame::Integer(n)).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Ping { msg: Option<String> }
+impl Ping {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Ping> {
+         match parse.next_string() { Ok(msg) => Ok(Ping { msg: Some(msg) }), Err(_) => Ok(Ping { msg: None }) }
+    }
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
+        let response = match self.msg { None => Frame::Simple("PONG".into()), Some(msg) => Frame::Bulk(Bytes::from(msg)) };
+        dst.write_frame(&response).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Auth { password: String, username: Option<String> }
+impl Auth {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Auth> {
+        let first = parse.next_string()?;
+        match parse.next_string() {
+            Ok(second) => Ok(Auth { username: Some(first), password: second }),
+            Err(_) => Ok(Auth { username: None, password: first }),
+        }
+    }
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> { dst.write_frame(&Frame::Simple("OK".into())).await?; Ok(()) }
+}
+
+#[derive(Debug)]
+pub struct Info { section: Option<String> }
+impl Info {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Info> {
+        match parse.next_string() { Ok(s) => Ok(Info { section: Some(s) }), Err(_) => Ok(Info { section: None }) }
+    }
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
+        let msg = "role:master\r\nconnected_clients:1\r\nredis_version:0.1.0\r\n";
+        dst.write_frame(&Frame::Bulk(Bytes::from(msg))).await?;
+        Ok(())
+    }
+}
+
+
 #[derive(Debug)]
 pub struct Exists {
     key: String,
@@ -240,6 +295,7 @@ impl Exists {
     }
 }
 
+
 #[derive(Debug)]
 pub struct HSet {
     key: String,
@@ -256,19 +312,8 @@ impl HSet {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let mut hash_map = match db.get_value(&self.key) {
-            Some(DataType::Hash(h)) => h,
-            None => HashMap::new(),
-            _ => {
-                dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                return Ok(());
-            }
-        };
-
-        hash_map.insert(self.field, self.value);
-        db.set_value(self.key, DataType::Hash(hash_map));
-
-        dst.write_frame(&Frame::Integer(1)).await?;
+        let result = db.hset(self.key, self.field, self.value);
+        dst.write_frame(&Frame::Integer(result as i64)).await?;
         Ok(())
     }
 }
@@ -287,15 +332,8 @@ impl HGet {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = match db.get_value(&self.key) {
-            Some(DataType::Hash(h)) => {
-                if let Some(val) = h.get(&self.field) {
-                    Frame::Bulk(val.clone())
-                } else {
-                    Frame::Null
-                }
-            }
-            Some(_) => Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+        let response = match db.hget(&self.key, &self.field) {
+            Some(val) => Frame::Bulk(val),
             None => Frame::Null,
         };
         dst.write_frame(&response).await?;
@@ -317,17 +355,9 @@ impl HDel {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = match db.get_value(&self.key) {
-            Some(DataType::Hash(mut h)) => {
-                let removed = if h.remove(&self.field).is_some() { 1 } else { 0 };
-                db.set_value(self.key, DataType::Hash(h)); // Build-back
-                Frame::Integer(removed)
-            },
-            None => Frame::Integer(0),
-            _ => Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
-        };
-        dst.write_frame(&response).await?;
-        Ok(())
+       let result = db.hdel(&self.key, &self.field);
+       dst.write_frame(&Frame::Integer(result as i64)).await?;
+       Ok(())
     }
 }
 
@@ -345,15 +375,8 @@ impl HExists {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-         let response = match db.get_value(&self.key) {
-            Some(DataType::Hash(h)) => {
-                let exists = if h.contains_key(&self.field) { 1 } else { 0 };
-                Frame::Integer(exists)
-            },
-            None => Frame::Integer(0),
-            _ => Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
-        };
-        dst.write_frame(&response).await?;
+        let result = db.hexists(&self.key, &self.field);
+        dst.write_frame(&Frame::Integer(result as i64)).await?;
         Ok(())
     }
 }
@@ -370,8 +393,8 @@ impl HGetAll {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = match db.get_value(&self.key) {
-            Some(DataType::Hash(h)) => {
+        let response = match db.hgetall(&self.key) {
+            Some(h) => {
                 let mut frames = Vec::new();
                 for (k, v) in h {
                     frames.push(Frame::Bulk(Bytes::from(k)));
@@ -379,7 +402,6 @@ impl HGetAll {
                 }
                 Frame::Array(frames)
             }
-            Some(_) => Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
             None => Frame::Array(vec![]),
         };
         dst.write_frame(&response).await?;
@@ -399,18 +421,12 @@ impl HKeys {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = match db.get_value(&self.key) {
-            Some(DataType::Hash(h)) => {
-                 let mut frames = Vec::new();
-                 for k in h.keys() {
-                     frames.push(Frame::Bulk(Bytes::from(k.clone())));
-                 }
-                 Frame::Array(frames)
-            },
-            None => Frame::Array(vec![]),
-            _ => Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
-        };
-        dst.write_frame(&response).await?;
+        let keys = db.hkeys(&self.key);
+        let mut frames = Vec::new();
+        for k in keys {
+            frames.push(Frame::Bulk(Bytes::from(k)));
+        }
+        dst.write_frame(&Frame::Array(frames)).await?;
         Ok(())
     }
 }
@@ -427,18 +443,31 @@ impl HVals {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = match db.get_value(&self.key) {
-            Some(DataType::Hash(h)) => {
-                 let mut frames = Vec::new();
-                 for v in h.values() {
-                     frames.push(Frame::Bulk(v.clone()));
-                 }
-                 Frame::Array(frames)
-            },
-            None => Frame::Array(vec![]),
-            _ => Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
-        };
-        dst.write_frame(&response).await?;
+         let vals = db.hvals(&self.key);
+         let mut frames = Vec::new();
+         for v in vals {
+             frames.push(Frame::Bulk(v));
+         }
+         dst.write_frame(&Frame::Array(frames)).await?;
+         Ok(())
+    }
+}
+
+
+#[derive(Debug)]
+pub struct HLen {
+    key: String,
+    field: String,
+} 
+impl HLen {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HLen> {
+        let key = parse.next_string()?;
+        Ok(HLen { key, field: String::new() }) 
+    }
+    
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        let len = db.hlen(&self.key);
+        dst.write_frame(&Frame::Integer(len as i64)).await?;
         Ok(())
     }
 }
@@ -447,522 +476,39 @@ impl HVals {
 pub struct HScan {
     key: String,
     cursor: u64,
-    match_pattern: Option<String>,
-    count: Option<usize>,
 }
 
 impl HScan {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HScan> {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HScan> { 
         let key = parse.next_string()?;
         let cursor_str = parse.next_string()?;
-        let cursor = cursor_str.parse::<u64>().unwrap_or(0);
-        
-        let mut match_pattern = None;
-        let mut count = None;
-
-        while let Ok(arg) = parse.next_string() {
-            match arg.to_lowercase().as_str() {
-                "match" => {
-                    match_pattern = Some(parse.next_string()?);
-                }
-                "count" => {
-                    let count_str = parse.next_string()?;
-                    count = Some(count_str.parse::<usize>().unwrap_or(10));
-                }
-                _ => {}
-            }
-        }
-
-        Ok(HScan {
-            key,
-            cursor,
-            match_pattern,
-            count,
-        })
+        Ok(HScan { key, cursor: cursor_str.parse().unwrap_or(0) }) 
     }
-
+    
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = match db.get_value(&self.key) {
-            Some(DataType::Hash(h)) => {
-                let mut keys: Vec<String> = h.keys().cloned().collect();
-                 // Filter keys if match pattern is provided
-                if let Some(pattern) = &self.match_pattern {
-                     let pattern = pattern.replace("*", "");
-                     if !pattern.is_empty() {
-                        keys.retain(|k| k.contains(&pattern));
-                     }
+        if let Some(map) = db.hgetall(&self.key) {
+              let mut frames = Vec::new();
+                for (k, v) in map {
+                    frames.push(Frame::Bulk(Bytes::from(k)));
+                    frames.push(Frame::Bulk(v));
                 }
-                
-                let mut frames = Vec::new();
-                for key in keys {
-                    let val = h.get(&key).unwrap();
-                     frames.push(Frame::Bulk(Bytes::from(key.clone())));
-                     frames.push(Frame::Bulk(val.clone()));
-                }
-                 // Result is [cursor, [key1, value1, ...]]
                 let result = vec![
-                    Frame::Bulk(Bytes::from("0")), // Cursor 0 means done
+                    Frame::Bulk(Bytes::from("0")),
                     Frame::Array(frames),
                 ];
-                Frame::Array(result)
-            },
-            None => {
-                 let result = vec![
-                    Frame::Bulk(Bytes::from("0")),
-                    Frame::Array(vec![]),
-                ];
-                Frame::Array(result)
-            },
-            _ => Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
-        };
-        dst.write_frame(&response).await?;
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct HLen {
-    key: String,
-}
-
-impl HLen {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<HLen> {
-        let key = parse.next_string()?;
-        Ok(HLen { key })
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = match db.get_value(&self.key) {
-            Some(DataType::Hash(h)) => Frame::Integer(h.len() as i64),
-            None => Frame::Integer(0),
-            _ => Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
-        };
-        dst.write_frame(&response).await?;
-        Ok(())
-    }
-}
-
-
-/// Get the value of key.
-///
-/// If the key does not exist the special value nil is returned. An error is
-/// returned if the value stored at key is not a string, because GET only
-/// handles string values.
-#[derive(Debug)]
-pub struct Get {
-    /// Name of the key to get
-    key: String,
-}
-
-impl Get {
-    /// Create a new `Get` command which fetches `key`.
-    pub fn new(key: impl ToString) -> Get {
-        Get {
-            key: key.to_string(),
-        }
-    }
-
-    /// Read the `Get` command from the `Parse` structure.
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Get> {
-        // The `GET` string has already been consumed. The next value is the
-        // name of the key to get. If the next value is not a string or the
-        // input is fully consumed, then an error is returned.
-        let key = parse.next_string()?;
-
-        Ok(Get { key })
-    }
-
-    /// Apply the `Get` command to the specified `Db` instance.
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        // Get the value from the shared database state
-        let response = if let Some(value) = db.get(&self.key) {
-            // If a value is present, it is written to the client in "bulk"
-            // format.
-            Frame::Bulk(value)
+                dst.write_frame(&Frame::Array(result)).await?;
         } else {
-            // If there is no value, `Null` is written.
-            Frame::Null
-        };
-
-        // Write the response back to the client
-        dst.write_frame(&response).await?;
-
+             let result = vec![
+                Frame::Bulk(Bytes::from("0")),
+                Frame::Array(vec![]),
+            ];
+            dst.write_frame(&Frame::Array(result)).await?;
+        }
         Ok(())
     }
 }
 
-/// Set `key` to hold the string `value`.
-///
-/// If `key` already holds a value, it is overwritten, regardless of its type.
-/// Any previous time to live associated with the key is discarded on
-/// successful SET operation.
-#[derive(Debug)]
-pub struct Set {
-    /// the lookup key
-    key: String,
-
-    /// the value to be stored
-    value: Bytes,
-}
-
-impl Set {
-    /// Create a new `Set` command which sets `key` to `value`.
-    pub fn new(key: impl ToString, value: Bytes) -> Set {
-        Set {
-            key: key.to_string(),
-            value,
-        }
-    }
-
-    /// Read the `Set` command from the `Parse` structure.
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Set> {
-        // Read the key to set.
-        let key = parse.next_string()?;
-
-        // Read the value to set.
-        let value = parse.next_bytes()?;
-
-        Ok(Set { key, value })
-    }
-
-    /// Apply the `Set` command to the specified `Db` instance.
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        // Set the value in the shared database state
-        db.set(self.key, self.value);
-
-        // Create a success response
-        let response = Frame::Simple("OK".to_string());
-
-        // Write the response back to the client
-        dst.write_frame(&response).await?;
-
-        Ok(())
-    }
-}
-
-/// Removes the specified keys. A key is ignored if it does not exist.
-///
-/// Return the number of keys that were removed.
-#[derive(Debug)]
-pub struct Del {
-    /// key to remove
-    key: String,
-}
-
-impl Del {
-    /// Create a new `Del` command which removes `key`.
-    pub fn new(key: impl ToString) -> Del {
-        Del {
-            key: key.to_string(),
-        }
-    }
-
-    /// Read the `Del` command from the `Parse` structure.
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Del> {
-        // Read the key to delete.
-        let key = parse.next_string()?;
-
-        Ok(Del { key })
-    }
-
-    /// Apply the `Del` command to the specified `Db` instance.
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        // Delete the value from the shared database state
-        // For now, we only support deleting a single key
-        let num_deleted = if db.delete(&self.key) { 1 } else { 0 };
-
-        // Create a response
-        let response = Frame::Integer(num_deleted);
-
-        // Write the response back to the client
-        dst.write_frame(&response).await?;
-
-        Ok(())
-    }
-}
-
-/// Returns PONG if no argument is provided, otherwise return a copy of the argument as a bulk.
-#[derive(Debug)]
-pub struct Ping {
-    /// optional message
-    msg: Option<String>,
-}
-
-impl Ping {
-    /// Create a new `Ping` command.
-    pub fn new(msg: Option<String>) -> Ping {
-        Ping { msg }
-    }
-
-    /// Read the `Ping` command from the `Parse` structure.
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Ping> {
-        match parse.next_string() {
-            Ok(msg) => Ok(Ping { msg: Some(msg) }),
-            Err(_) => Ok(Ping { msg: None }),
-        }
-    }
-
-    /// Apply the `Ping` command.
-    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
-        let response = match self.msg {
-            None => Frame::Simple("PONG".to_string()),
-            Some(msg) => Frame::Bulk(Bytes::from(msg)),
-        };
-
-        dst.write_frame(&response).await?;
-
-        Ok(())
-    }
-}
-
-/// Request for authentication.
-#[derive(Debug)]
-pub struct Auth {
-    /// The password
-    password: String,
-    /// The username (optional, Redis 6+ allows it)
-    username: Option<String>,
-}
-
-impl Auth {
-    /// Create a new `Auth` command.
-    pub fn new(password: impl ToString) -> Auth {
-        Auth {
-            password: password.to_string(),
-            username: None,
-        }
-    }
-
-    /// Read the `Auth` command from the `Parse` structure.
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Auth> {
-        let first = parse.next_string()?;
-        
-        // AUTH can be `AUTH password` or `AUTH username password`
-        match parse.next_string() {
-            Ok(second) => Ok(Auth {
-                username: Some(first),
-                password: second,
-            }),
-            Err(_) => Ok(Auth {
-                username: None,
-                password: first,
-            }),
-        }
-    }
-
-    /// Apply the `Auth` command.
-    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
-        // We don't actually check password for now, just return OK
-        // This is to allow clients that force AUTH to connect
-        let response = Frame::Simple("OK".to_string());
-
-        dst.write_frame(&response).await?;
-
-        Ok(())
-    }
-}
-
-/// Returns server information.
-#[derive(Debug)]
-pub struct Info {
-    /// optional section
-    section: Option<String>,
-}
-
-impl Info {
-    /// Create a new `Info` command.
-    pub fn new(section: Option<String>) -> Info {
-        Info { section }
-    }
-
-    /// Read the `Info` command from the `Parse` structure.
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Info> {
-        match parse.next_string() {
-            Ok(section) => Ok(Info { section: Some(section) }),
-            Err(_) => Ok(Info { section: None }),
-        }
-    }
-
-    /// Apply the `Info` command.
-    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
-        let msg = "role:master\r\nconnected_clients:1\r\nredis_version:0.1.0\r\n";
-        let response = Frame::Bulk(Bytes::from(msg));
-
-        dst.write_frame(&response).await?;
-
-        Ok(())
-    }
-}
-
-/// Iterate the set of keys in the current database.
-#[derive(Debug)]
-pub struct Scan {
-    /// The cursor
-    cursor: u64,
-    /// The match pattern
-    match_pattern: Option<String>,
-    /// The count (hint)
-    count: Option<usize>,
-}
-
-impl Scan {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Scan> {
-        let cursor_str = parse.next_string()?;
-        let cursor = cursor_str.parse::<u64>().unwrap_or(0);
-        
-        let mut match_pattern = None;
-        let mut count = None;
-
-        while let Ok(arg) = parse.next_string() {
-            match arg.to_lowercase().as_str() {
-                "match" => {
-                    match_pattern = Some(parse.next_string()?);
-                }
-                "count" => {
-                    let count_str = parse.next_string()?;
-                    count = Some(count_str.parse::<usize>().unwrap_or(10));
-                }
-                _ => {}
-            }
-        }
-
-        Ok(Scan {
-            cursor,
-            match_pattern,
-            count,
-        })
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        // Ignore cursor and returns all keys for now
-        // This is valid if we always return cursor "0" indicating scan is complete
-        // Real implementation would need to handle cursor logic
-        let mut keys = db.keys();
-        
-        // Filter keys if match pattern is provided
-        if let Some(pattern) = &self.match_pattern {
-            // Simple robust glob matching is hard without crate. 
-            // We'll support standard '*' wildcard only for now, otherwise simple substring
-            let pattern = pattern.replace("*", "");
-            if !pattern.is_empty() {
-               keys.retain(|k| k.contains(&pattern));
-            }
-        }
-
-        // Convert keys to frames
-        let mut frames = Vec::new();
-        for key in keys {
-            frames.push(Frame::Bulk(Bytes::from(key)));
-        }
-
-        // Result is [cursor, [key1, key2, ...]]
-        let mut result = Vec::new();
-        result.push(Frame::Bulk(Bytes::from("0"))); // New cursor (0 means done)
-        result.push(Frame::Array(frames));
-
-        dst.write_frame(&Frame::Array(result)).await?;
-
-        Ok(())
-    }
-}
-
-/// Find all keys matching the given pattern.
-#[derive(Debug)]
-pub struct Keys {
-    /// The match pattern
-    pattern: String,
-}
-
-impl Keys {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Keys> {
-        let pattern = parse.next_string()?;
-        Ok(Keys { pattern })
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let mut keys = db.keys();
-        
-        // Simple filtering: if pattern isn't just "*", filter
-        if self.pattern != "*" {
-             let pattern = self.pattern.replace("*", "");
-             if !pattern.is_empty() {
-                keys.retain(|k| k.contains(&pattern));
-             }
-        }
-
-        let mut frames = Vec::new();
-        for key in keys {
-            frames.push(Frame::Bulk(Bytes::from(key)));
-        }
-
-        dst.write_frame(&Frame::Array(frames)).await?;
-
-        Ok(())
-    }
-}
-
-/// Returns the string representation of the value's type.
-#[derive(Debug)]
-pub struct Type {
-    /// The key
-    key: String,
-}
-
-impl Type {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Type> {
-        let key = parse.next_string()?;
-        Ok(Type { key })
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = match db.get_value(&self.key) {
-            Some(DataType::String(_)) => Frame::Simple("string".to_string()),
-            Some(DataType::List(_)) => Frame::Simple("list".to_string()),
-            Some(DataType::Set(_)) => Frame::Simple("set".to_string()),
-            Some(DataType::Hash(_)) => Frame::Simple("hash".to_string()),
-            Some(DataType::ZSet(_)) => Frame::Simple("zset".to_string()),
-            Some(DataType::Json(_)) => Frame::Simple("ReJSON-RL".to_string()),
-            None => Frame::Simple("none".to_string()),
-        };
-
-        dst.write_frame(&response).await?;
-
-        Ok(())
-    }
-}
-
-/// Return the number of keys in the currently-selected database.
-#[derive(Debug)]
-pub struct DbSize;
-
-impl DbSize {
-    pub(crate) fn parse_frames(_parse: &mut Parse) -> crate::Result<DbSize> {
-        Ok(DbSize)
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let len = db.len();
-        dst.write_frame(&Frame::Integer(len as i64)).await?;
-        Ok(())
-    }
-}
-
-/// Delete all the keys of the currently selected DB.
-#[derive(Debug)]
-pub struct FlushDb;
-
-impl FlushDb {
-    pub(crate) fn parse_frames(_parse: &mut Parse) -> crate::Result<FlushDb> {
-        Ok(FlushDb)
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        db.clear();
-        dst.write_frame(&Frame::Simple("OK".to_string())).await?;
-        Ok(())
-    }
-}
-
+// Arrays / Lists
 #[derive(Debug)]
 pub struct LPush {
     key: String,
@@ -973,6 +519,7 @@ impl LPush {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<LPush> {
         let key = parse.next_string()?;
         let mut values = Vec::new();
+        // Support variadic arguments
         while let Ok(val) = parse.next_bytes() {
             values.push(val);
         }
@@ -980,21 +527,10 @@ impl LPush {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let mut list = match db.get_value(&self.key) {
-            Some(DataType::List(l)) => l,
-            None => Vec::new(),
-            _ => {
-                dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                return Ok(());
-            }
-        };
-
+        let mut len = 0;
         for val in self.values {
-            list.insert(0, val);
+            len = db.lpush(self.key.clone(), val);
         }
-        let len = list.len();
-        db.set_value(self.key, DataType::List(list));
-
         dst.write_frame(&Frame::Integer(len as i64)).await?;
         Ok(())
     }
@@ -1017,21 +553,10 @@ impl RPush {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let mut list = match db.get_value(&self.key) {
-            Some(DataType::List(l)) => l,
-            None => Vec::new(),
-            _ => {
-                dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                return Ok(());
-            }
-        };
-
+        let mut len = 0;
         for val in self.values {
-            list.push(val);
+            len = db.rpush(self.key.clone(), val);
         }
-        let len = list.len();
-        db.set_value(self.key, DataType::List(list));
-
         dst.write_frame(&Frame::Integer(len as i64)).await?;
         Ok(())
     }
@@ -1049,24 +574,9 @@ impl LPop {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let mut list = match db.get_value(&self.key) {
-            Some(DataType::List(l)) => l,
-            None => {
-                 dst.write_frame(&Frame::Null).await?;
-                 return Ok(());
-            },
-            _ => {
-                dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                return Ok(());
-            }
-        };
-
-        if list.is_empty() {
-             dst.write_frame(&Frame::Null).await?;
-        } else {
-             let val = list.remove(0);
-             db.set_value(self.key, DataType::List(list));
-             dst.write_frame(&Frame::Bulk(val)).await?;
+        match db.lpop(&self.key) {
+            Some(val) => dst.write_frame(&Frame::Bulk(val)).await?,
+            None => dst.write_frame(&Frame::Null).await?,
         }
         Ok(())
     }
@@ -1084,23 +594,9 @@ impl RPop {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let mut list = match db.get_value(&self.key) {
-             Some(DataType::List(l)) => l,
-             None => {
-                 dst.write_frame(&Frame::Null).await?;
-                 return Ok(());
-             },
-             _ => {
-                 dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                 return Ok(());
-             }
-        };
-
-        if let Some(val) = list.pop() {
-             db.set_value(self.key, DataType::List(list));
-             dst.write_frame(&Frame::Bulk(val)).await?;
-        } else {
-             dst.write_frame(&Frame::Null).await?;
+        match db.rpop(&self.key) {
+            Some(val) => dst.write_frame(&Frame::Bulk(val)).await?,
+            None => dst.write_frame(&Frame::Null).await?,
         }
         Ok(())
     }
@@ -1116,45 +612,22 @@ pub struct LRange {
 impl LRange {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<LRange> {
         let key = parse.next_string()?;
-        let start = parse.next_int()? as i64;
-        let stop = parse.next_int()? as i64;
+        let start = parse.next_int()?;
+        let stop = parse.next_int()?;
         Ok(LRange { key, start, stop })
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let list = match db.get_value(&self.key) {
-             Some(DataType::List(l)) => l,
-             None => {
-                 dst.write_frame(&Frame::Array(vec![])).await?;
-                 return Ok(());
-             },
-             _ => {
-                 dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                 return Ok(());
-             }
-        };
-
-        let len = list.len() as i64;
-        let start = if self.start < 0 { len + self.start } else { self.start };
-        let stop = if self.stop < 0 { len + self.stop } else { self.stop };
-
-        let start = start.max(0) as usize;
-        let stop = stop.max(0) as usize;
-        
+        let values = db.lrange(&self.key, self.start, self.stop);
         let mut frames = Vec::new();
-        if start < list.len() {
-             let stop = (stop + 1).min(list.len());
-             if start < stop {
-                 for i in start..stop {
-                      frames.push(Frame::Bulk(list[i].clone()));
-                 }
-             }
+        for v in values {
+            frames.push(Frame::Bulk(v));
         }
-
         dst.write_frame(&Frame::Array(frames)).await?;
         Ok(())
     }
 }
+
 
 #[derive(Debug)]
 pub struct SAdd {
@@ -1173,23 +646,11 @@ impl SAdd {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let mut set = match db.get_value(&self.key) {
-            Some(DataType::Set(s)) => s,
-            None => HashSet::new(),
-            _ => {
-                dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                return Ok(());
-            }
-        };
-
-        let mut added = 0;
+        let mut count = 0;
         for member in self.members {
-             if set.insert(member) {
-                 added += 1;
-             }
+             count += db.sadd(self.key.clone(), member);
         }
-        db.set_value(self.key, DataType::Set(set));
-        dst.write_frame(&Frame::Integer(added as i64)).await?;
+        dst.write_frame(&Frame::Integer(count as i64)).await?;
         Ok(())
     }
 }
@@ -1206,18 +667,10 @@ impl SMembers {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-         let set = match db.get_value(&self.key) {
-            Some(DataType::Set(s)) => s,
-            None => HashSet::new(),
-            _ => {
-                dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                return Ok(());
-            }
-        };
-
+        let members = db.smembers(&self.key);
         let mut frames = Vec::new();
-        for member in set {
-             frames.push(Frame::Bulk(member));
+        for m in members {
+            frames.push(Frame::Bulk(m));
         }
         dst.write_frame(&Frame::Array(frames)).await?;
         Ok(())
@@ -1241,103 +694,11 @@ impl SRem {
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let mut set = match db.get_value(&self.key) {
-            Some(DataType::Set(s)) => s,
-            None => {
-                 dst.write_frame(&Frame::Integer(0)).await?;
-                 return Ok(());
-            },
-            _ => {
-                dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                return Ok(());
-            }
-        };
-
-        let mut removed = 0;
+        let mut count = 0;
         for member in self.members {
-             if set.remove(&member) {
-                 removed += 1;
-             }
+            count += db.srem(&self.key, &member);
         }
-        db.set_value(self.key, DataType::Set(set));
-        dst.write_frame(&Frame::Integer(removed as i64)).await?;
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct JsonSet {
-    key: String,
-    path: String,
-    value: String,
-}
-
-impl JsonSet {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<JsonSet> {
-        let key = parse.next_string()?;
-        let path = parse.next_string()?; // currently ignored or simple check
-        let value = parse.next_string()?;
-        Ok(JsonSet { key, path, value })
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        // Parse JSON
-        let json_val: serde_json::Value = match serde_json::from_str(&self.value) {
-            Ok(v) => v,
-            Err(_) => {
-                 dst.write_frame(&Frame::Error("ERR invalid json".to_string())).await?;
-                 return Ok(());
-            }
-        };
-        
-        // For MVP, we ignore path if it's new (overwrite logic) or implement simple root set
-        if self.path != "$" && self.path != "." {
-             // For MVP, we only support root set.
-        }
-
-        db.set_value(self.key, DataType::Json(json_val));
-        dst.write_frame(&Frame::Simple("OK".to_string())).await?;
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct JsonGet {
-    key: String,
-    path: Option<String>,
-}
-
-impl JsonGet {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<JsonGet> {
-        let key = parse.next_string()?;
-        let path = match parse.next_string() {
-            Ok(p) => Some(p),
-            Err(_) => None,
-        };
-        Ok(JsonGet { key, path })
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let val = match db.get_value(&self.key) {
-            Some(DataType::Json(v)) => v,
-            None => {
-                 dst.write_frame(&Frame::Null).await?;
-                 return Ok(());
-            },
-            _ => {
-                dst.write_frame(&Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string())).await?;
-                return Ok(());
-            }
-        };
-
-        let output = if let Some(_path) = self.path {
-             // Path filtering not implemented yet
-             val.to_string()
-        } else {
-             val.to_string()
-        };
-
-        dst.write_frame(&Frame::Bulk(Bytes::from(output))).await?;
+        dst.write_frame(&Frame::Integer(count as i64)).await?;
         Ok(())
     }
 }
@@ -1352,33 +713,20 @@ impl ZAdd {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<ZAdd> {
         let key = parse.next_string()?;
         let mut elements = Vec::new();
-        // Loop: score, member
         while let Ok(score_str) = parse.next_string() {
-             let score = score_str.parse::<f64>().unwrap_or(0.0);
-             let member = parse.next_string()?;
-             elements.push((score, member));
+            let score = score_str.parse::<f64>().map_err(|_| "ERR value is not a valid float")?;
+            let member = parse.next_string()?;
+            elements.push((score, member));
         }
         Ok(ZAdd { key, elements })
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let mut zset = match db.get_value(&self.key) {
-            Some(DataType::ZSet(z)) => z,
-            None => HashMap::new(),
-            _ => {
-                dst.write_frame(&Frame::Error("WRONGTYPE".to_string())).await?;
-                return Ok(());
-            }
-        };
-
-        let mut added = 0;
+        let mut count = 0;
         for (score, member) in self.elements {
-             if zset.insert(member, score).is_none() {
-                 added += 1;
-             }
+            count += db.zadd(self.key.clone(), score, member);
         }
-        db.set_value(self.key, DataType::ZSet(zset));
-        dst.write_frame(&Frame::Integer(added as i64)).await?;
+        dst.write_frame(&Frame::Integer(count as i64)).await?;
         Ok(())
     }
 }
@@ -1388,160 +736,227 @@ pub struct ZRange {
     key: String,
     start: i64,
     stop: i64,
+    with_scores: bool,
 }
 
 impl ZRange {
     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<ZRange> {
         let key = parse.next_string()?;
-        let start = parse.next_int()? as i64;
-        let stop = parse.next_int()? as i64;
-        // Ignore WITHSCORES for now
-        Ok(ZRange { key, start, stop })
+        let start = parse.next_int()?;
+        let stop = parse.next_int()?;
+        let mut with_scores = false;
+        if let Ok(arg) = parse.next_string() {
+            if arg.to_lowercase() == "withscores" {
+                with_scores = true;
+            }
+        }
+        Ok(ZRange { key, start, stop, with_scores })
     }
 
     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let zset = match db.get_value(&self.key) {
-             Some(DataType::ZSet(z)) => z,
-             None => {
-                 dst.write_frame(&Frame::Array(vec![])).await?;
-                 return Ok(());
-             },
-             _ => {
-                 dst.write_frame(&Frame::Error("WRONGTYPE".to_string())).await?;
-                 return Ok(());
-             }
-        };
-
-        // Convert to vec and sort
-        let mut elements: Vec<(&String, &f64)> = zset.iter().collect();
-        elements.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let len = elements.len() as i64;
-        let start = if self.start < 0 { len + self.start } else { self.start };
-        let stop = if self.stop < 0 { len + self.stop } else { self.stop };
-
-        let start = start.max(0) as usize;
-        let stop = stop.max(0) as usize;
-        
+        let values = db.zrange(&self.key, self.start, self.stop, self.with_scores);
         let mut frames = Vec::new();
-        if start < elements.len() {
-             let stop = (stop + 1).min(elements.len());
-             if start < stop {
-                 for i in start..stop {
-                      frames.push(Frame::Bulk(Bytes::from(elements[i].0.clone())));
-                 }
-             }
+        for (member, score) in values {
+            frames.push(Frame::Bulk(Bytes::from(member)));
+            if self.with_scores {
+                frames.push(Frame::Bulk(Bytes::from(score.to_string())));
+            }
         }
-
         dst.write_frame(&Frame::Array(frames)).await?;
         Ok(())
     }
 }
 
-/// Represents an unknown command.
+
 #[derive(Debug)]
-pub struct Ttl {
+pub struct JsonSet {
     key: String,
+    path: String,
+    value: String,
 }
 
+impl JsonSet {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<JsonSet> {
+        let key = parse.next_string()?;
+        let path = parse.next_string()?;
+        let value = parse.next_string()?;
+        Ok(JsonSet { key, path, value })
+    }
+     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+         let mut json_val = match db.get_value_clone(&self.key) {
+             Some(DataType::Json(v)) => v,
+             None => serde_json::Value::Null,
+             _ => {
+                  dst.write_frame(&Frame::Error("WRONGTYPE".into())).await?;
+                  return Ok(());
+             }
+         };
+         
+         if self.path == "$" {
+              if let Ok(v) = serde_json::from_str(&self.value) {
+                  db.set_value(self.key, DataType::Json(v));
+                  dst.write_frame(&Frame::Simple("OK".into())).await?;
+              } else {
+                   dst.write_frame(&Frame::Error("ERR invalid json".into())).await?;
+              }
+         } else {
+               dst.write_frame(&Frame::Error("ERR path not supported yet".into())).await?;
+         }
+         Ok(())
+     }
+}
+
+#[derive(Debug)]
+pub struct JsonGet {
+    key: String,
+    path: String,
+}
+
+impl JsonGet {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<JsonGet> {
+        let key = parse.next_string()?;
+        let path = parse.next_string()?;
+        Ok(JsonGet { key, path })
+    }
+
+     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+         let response = match db.get_value_clone(&self.key) {
+             Some(DataType::Json(v)) => Frame::Bulk(Bytes::from(v.to_string())),
+             _ => Frame::Null
+         };
+         dst.write_frame(&response).await?;
+         Ok(())
+     }
+}
+
+#[derive(Debug)]
+pub struct DbSize {}
+impl DbSize {
+    pub(crate) fn parse_frames(_parse: &mut Parse) -> crate::Result<DbSize> { Ok(DbSize {}) }
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        dst.write_frame(&Frame::Integer(db.len() as i64)).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct FlushDb {}
+impl FlushDb {
+    pub(crate) fn parse_frames(_parse: &mut Parse) -> crate::Result<FlushDb> { Ok(FlushDb {}) }
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        db.clear();
+        dst.write_frame(&Frame::Simple("OK".into())).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Type { key: String }
+impl Type {
+     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Type> { Ok(Type { key: parse.next_string()? }) }
+     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+         let type_str = match db.get_value_clone(&self.key) {
+             Some(DataType::String(_)) => "string",
+             Some(DataType::List(_)) => "list",
+             Some(DataType::Set(_)) => "set",
+             Some(DataType::ZSet(_)) => "zset",
+             Some(DataType::Hash(_)) => "hash",
+             Some(DataType::Json(_)) => "ReJSON-RL",
+             None => "none",
+         };
+         dst.write_frame(&Frame::Simple(type_str.into())).await?;
+         Ok(())
+     }
+}
+
+#[derive(Debug)]
+pub struct Keys { pattern: String }
+impl Keys {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Keys> { Ok(Keys { pattern: parse.next_string()? }) }
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        let keys = db.keys();
+        let pattern = self.pattern.replace("*", "");
+        let matched: Vec<Frame> = keys.into_iter()
+            .filter(|k| k.contains(&pattern))
+            .map(|k| Frame::Bulk(Bytes::from(k)))
+            .collect();
+        dst.write_frame(&Frame::Array(matched)).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Scan { cursor: u64 }
+impl Scan {
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Scan> { 
+        let _cursor = parse.next_string()?; 
+        Ok(Scan { cursor: 0 }) 
+    }
+    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+        let keys = db.keys(); 
+        let frames: Vec<Frame> = keys.into_iter().take(100).map(|k| Frame::Bulk(Bytes::from(k))).collect();
+        let resp = vec![Frame::Bulk(Bytes::from("0")), Frame::Array(frames)];
+        dst.write_frame(&Frame::Array(resp)).await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Ttl { key: String }
 impl Ttl {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Ttl> {
-        let key = parse.next_string()?;
-        Ok(Ttl { key })
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = if db.exists(&self.key) {
-            Frame::Integer(-1)
-        } else {
-            Frame::Integer(-2)
-        };
-        dst.write_frame(&response).await?;
-        Ok(())
-    }
+     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Ttl> { Ok(Ttl { key: parse.next_string()? }) }
+     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+         if db.exists(&self.key) {
+             dst.write_frame(&Frame::Integer(-1)).await?;
+         } else {
+             dst.write_frame(&Frame::Integer(-2)).await?;
+         }
+         Ok(())
+     }
 }
 
 #[derive(Debug)]
-pub struct Pttl {
-    key: String,
-}
-
+pub struct Pttl { key: String }
 impl Pttl {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Pttl> {
-        let key = parse.next_string()?;
-        Ok(Pttl { key })
-    }
-
-    pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
-        let response = if db.exists(&self.key) {
-            Frame::Integer(-1)
-        } else {
-            Frame::Integer(-2)
-        };
-        dst.write_frame(&response).await?;
-        Ok(())
-    }
+     pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Pttl> { Ok(Pttl { key: parse.next_string()? }) }
+     pub async fn apply(self, db: &Db, dst: &mut Connection) -> crate::Result<()> {
+         if db.exists(&self.key) {
+             dst.write_frame(&Frame::Integer(-1)).await?;
+         } else {
+             dst.write_frame(&Frame::Integer(-2)).await?;
+         }
+         Ok(())
+     }
 }
 
 #[derive(Debug)]
-pub struct Select {
-    db: i64,
-}
-
+pub struct Select { db: i64 }
 impl Select {
-    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Select> {
-        let db = parse.next_int()?;
-        Ok(Select { db })
-    }
-
-    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
-        dst.write_frame(&Frame::Simple("OK".to_string())).await?;
-        Ok(())
-    }
+    pub(crate) fn parse_frames(parse: &mut Parse) -> crate::Result<Select> { Ok(Select { db: parse.next_int()? }) }
+    pub async fn apply(self, _dst: &mut Connection) -> crate::Result<()> { Ok(()) }
 }
 
 #[derive(Debug)]
-pub struct Unknown {
-    command_name: String,
-}
-
+pub struct Unknown { command_name: String }
 impl Unknown {
-    /// Create a new `Unknown` command.
-    pub(crate) fn new(key: impl ToString) -> Unknown {
-        Unknown {
-            command_name: key.to_string(),
-        }
-    }
-
-    /// Apply the `Unknown` command.
-    pub(crate) fn get_name(&self) -> &str {
-        &self.command_name
-    }
-
-    /// Respond with an error.
-    pub(crate) async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
-        let response = Frame::Error(format!("ERR unknown command '{}'", self.command_name));
-
-        dst.write_frame(&response).await?;
-
+    pub(crate) fn new(key: impl ToString) -> Unknown { Unknown { command_name: key.to_string() } }
+    pub(crate) fn get_name(&self) -> &str { &self.command_name }
+    pub async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
+        dst.write_frame(&Frame::Error(format!("unknown command '{}'", self.command_name))).await?;
         Ok(())
     }
 }
 
-/// Utility for parsing a command from a `Frame`.
-pub(crate) struct Parse {
-    /// Iterator over the frame components
+
+struct Parse {
     parts: std::vec::IntoIter<Frame>,
 }
 
 impl Parse {
-    /// Create a new `Parse` to parse the contents of `frame`.
-    ///
-    /// Returns `Err` if `frame` is not an array frame.
-    pub(crate) fn new(frame: Frame) -> Result<Parse, String> {
+    fn new(frame: Frame) -> Result<Parse, Error> {
         let array = match frame {
             Frame::Array(array) => array,
-            frame => return Err(format!("protocol error; expected array, got {:?}", frame)),
+            frame => return Err(format!("protocol error; expected array, got {:?}", frame).into()),
         };
 
         Ok(Parse {
@@ -1549,48 +964,42 @@ impl Parse {
         })
     }
 
-    /// Return the next integer.
-    pub(crate) fn next_int(&mut self) -> Result<i64, String> {
-        use Frame::*;
-
-        match self.parts.next() {
-            Some(Integer(i)) => Ok(i),
-            Some(Simple(s)) => s.parse::<i64>().map_err(|_| "protocol error; invalid integer".into()),
-            Some(Bulk(data)) => {
-                let s = str::from_utf8(&data).map_err(|_| "protocol error; invalid utf8")?;
-                s.parse::<i64>().map_err(|_| "protocol error; invalid integer".into())
-            }
-            None => Err("protocol error; unexpected end of frame".into()),
-            _ => Err("protocol error; expected integer".into()),
-        }
+    fn next(&mut self) -> Result<Frame, Error> {
+        self.parts.next().ok_or_else(|| "protocol error; expected frame".into())
     }
 
-    /// Return the next string.
-    pub(crate) fn next_string(&mut self) -> Result<String, String> {
-        match self.parts.next() {
-            // Both `Simple` and `Bulk` representation may be strings. Strings
-            // are parsed to UTF-8.
-            Some(Frame::Simple(s)) => Ok(s),
-            Some(Frame::Bulk(data)) => str::from_utf8(&data[..])
+    fn next_string(&mut self) -> Result<String, Error> {
+        match self.next()? {
+            Frame::Simple(s) => Ok(s),
+            Frame::Bulk(data) => std::str::from_utf8(&data[..])
                 .map(|s| s.to_string())
                 .map_err(|_| "protocol error; invalid string".into()),
-            None => Err("protocol error; unexpected end of frame".into()),
-            _ => Err("protocol error; expected simple frame or bulk frame".into()),
+            frame => Err(format!("protocol error; expected simple frame or bulk frame, got {:?}", frame).into()),
         }
     }
 
-    /// Return the next value as raw bytes.
-    pub(crate) fn next_bytes(&mut self) -> Result<Bytes, String> {
-        match self.parts.next() {
-            Some(Frame::Simple(s)) => Ok(Bytes::from(s.into_bytes())),
-            Some(Frame::Bulk(data)) => Ok(data),
-            None => Err("protocol error; unexpected end of frame".into()),
-            _ => Err("protocol error; expected simple frame or bulk frame".into()),
+    fn next_bytes(&mut self) -> Result<Bytes, Error> {
+        match self.next()? {
+            Frame::Simple(s) => Ok(Bytes::from(s.into_bytes())),
+            Frame::Bulk(data) => Ok(data),
+            frame => Err(format!("protocol error; expected simple frame or bulk frame, got {:?}", frame).into()),
         }
     }
 
-    /// Ensure there are no more entries in the array
-    pub(crate) fn finish(&mut self) -> Result<(), String> {
+    fn next_int(&mut self) -> Result<i64, Error> {
+        use atoi::atoi;
+
+        const MSG: &str = "protocol error; invalid number";
+
+        match self.next()? {
+            Frame::Integer(v) => Ok(v),
+            Frame::Simple(data) => atoi(data.as_bytes()).ok_or_else(|| MSG.into()),
+            Frame::Bulk(data) => atoi(&data).ok_or_else(|| MSG.into()),
+            frame => Err(format!("protocol error; expected int frame but got {:?}", frame).into()),
+        }
+    }
+
+    fn finish(&mut self) -> Result<(), Error> {
         if self.parts.next().is_none() {
             Ok(())
         } else {

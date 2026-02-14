@@ -1,4 +1,4 @@
-use crate::frame::{self, Frame};
+use crate::protocol::{self, Frame};
 use async_recursion::async_recursion;
 
 use bytes::{Buf, BytesMut};
@@ -65,6 +65,12 @@ impl Connection {
             //
             // On success, the number of bytes is returned. `0` indicates "end
             // of stream".
+            
+            // OPTIMIZATION: Flush any pending writes before waiting for more data.
+            // This enables smart pipelining: we buffer responses while processing
+            // the read buffer, and only flush when we run dry.
+            self.stream.flush().await?;
+
             if 0 == self.stream.read_buf(&mut self.buffer).await? {
                 // The remote closed the connection. For this to be a clean
                 // shutdown, there should be no data in the read buffer. If
@@ -84,7 +90,7 @@ impl Connection {
     /// enough data has been buffered yet, `Ok(None)` is returned. If the
     /// buffered data does not represent a valid frame, `Err` is returned.
     fn parse_frame(&mut self) -> crate::Result<Option<Frame>> {
-        use frame::Error::Incomplete;
+        use protocol::Error::Incomplete;
 
         // Cursor is used to track the "current" location in the
         // buffer. Cursor also implements `Buf` from the `bytes` crate
@@ -154,7 +160,8 @@ impl Connection {
         // Ensure the encoded frame is written to the socket. The calls above
         // are to the buffered stream and writes. Calling `flush` writes the
         // remaining contents of the buffer to the socket.
-        self.stream.flush().await
+        // self.stream.flush().await <-- REMOVED
+        Ok(())
     }
 
     /// Write a frame literal to the stream/

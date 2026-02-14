@@ -1,13 +1,13 @@
 pub mod cmd;
 pub mod connection;
 pub mod db;
-pub mod frame;
+pub mod protocol;
 pub mod server;
 
 pub use cmd::Command;
 pub use connection::Connection;
 pub use db::Db;
-pub use frame::Frame;
+pub use protocol::Frame;
 pub use server::run;
 
 /// A specialized `Result` type for this crate.
