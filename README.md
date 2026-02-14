@@ -112,6 +112,21 @@ OK
 - **`src/cmd.rs`**: Command definitions, parsing logic, and execution handlers.
 - **`src/frame.rs`**: Definition of Redis protocol frames (`Simple`, `Integer`, `Bulk`, `Array`, `Error`).
 
+## 🔮 Coming Soon / Roadmap
+
+The following features are part of the standard Redis specification but are **not yet implemented** in RustBucket:
+
+- **Persistence**: RDB / AOF (Currently in-memory only)
+- **Expiration**: Active TTL expiry (Keys currently do not expire)
+- **Pub/Sub**: `PUBLISH`, `SUBSCRIBE`, `PSUBSCRIBE`
+- **Transactions**: `MULTI`, `EXEC`, `WATCH`
+- **Streams**: `XADD`, `XREAD`, etc.
+- **Lua Scripting**: `EVAL`
+- **Cluster & Sentinel**: Distributed support
+- **Eviction Policies**: `maxmemory` handling (LRU/LFU)
+- **Blocking Commands**: `BLPOP`, `BRPOP`
+- **ACLs**: Fine-grained user permissions
+
 ## 🤝 Contributing
 
 Contributions are welcome! Feel free to submit a Pull Request or open an Issue if you find bugs or want to implement missing Redis commands.
